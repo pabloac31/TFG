@@ -8,6 +8,6 @@ def fgsm(image, epsilon, data_grad):
   # Create the perturbed image by adjusting each pixel of the input image
   perturbed_image = image + epsilon*sign_data_grad
   # Adding clipping to maintain [0,1] range
-  perturbed_image = torch.clamp(perturbed_image, 0, 1)
+  perturbed_image = clamp_norm(perturbed_image, 0, 1)
   # Return the perturbed image
   return perturbed_image
