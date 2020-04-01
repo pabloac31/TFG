@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import torch
-from utils_cifar10 import clamp_norm
+from utils_cifar10 import *
 
 
 def fgsm(image, epsilon, data_grad):
