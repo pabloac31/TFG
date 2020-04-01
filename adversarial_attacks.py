@@ -6,24 +6,27 @@ import numpy as np
 import time
 import math
 
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+
 from PIL import Image
 import torchvision.transforms.functional as TF
 
 from tqdm import tqdm as pbar
 
-from utils_cifar10 import *
+from utils import *
 from adversarial_methods import *
 
 
-def test_fgsm(img, epsilon):
+def test_fgsm(model, img, epsilon):
   
-  model = iv3.to(device).eval()
+  model = model.to(device).eval()
   
   image = Image.open(img)
   x = TF.to_tensor(image)
 
-  for channel in range(3):
-    x[channel] = (x[channel] - mean[channel]) / std[channel]
+  x = normalize_cifar10(x)
 
   x = x.unsqueeze_(0).to(device)
 
@@ -66,8 +69,7 @@ def test_fgsm(img, epsilon):
 
   adv_ex = adv_x.squeeze().detach().cpu().numpy()
 
-  for channel in range(3):
-    adv_ex[channel] = adv_ex[channel]*std[channel] + mean[channel]
+  adv_ex = denormalize_cifar10(adv_ex)
 
   adv_ex = np.transpose(adv_ex, (1,2,0))
 

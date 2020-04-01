@@ -1,33 +1,42 @@
 # -*- coding: utf-8 -*-
 
-from __future__ import print_function
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
 from torchvision import datasets, transforms
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm as pbar
 
-from adversarial_methods import *
 
-mean, std = [0.4914, 0.4822, 0.4465], [0.2023, 0.1994, 0.2010]
+mean_cifar10, std_cifar10 = [0.4914, 0.4822, 0.4465], [0.2023, 0.1994, 0.2010]
 
 
-def normalize(img):
+def normalize_cifar10(img):
   for channel in range(3):
-    img[channel] = (img[channel] - mean[channel]) / std[channel]
+    img[channel] = (img[channel] - mean_cifar10[channel]) / std_cifar10[channel]
   return img
 
 
-def denormalize(img):
+def denormalize_cifar10(img):
   for channel in range(3):
-    img[channel] = img[channel] * std[channel] + mean[channel]
+    img[channel] = img[channel] * std_cifar10[channel] + mean_cifar10[channel]
   return img
 
 
-def testloader(path, batch_size):
+def clamp_cifar10(img, inf, sup):
+  im = img.detach().cpu().numpy()
+  for channel in range(3):
+    lim_inf = (inf-mean_cifar10[channel]) / std_cifar10[channel]
+    lim_sup = (sup-mean_cifar10[channel]) / std_cifar10[channel]
+    for i, arr in enumerate(im[0][channel]):
+      for j, pixel in enumerate(arr):
+        if pixel < lim_inf:
+          im[0][channel][i][j] = lim_inf
+        elif pixel > lim_sup:
+          im[0][channel][i][j] = lim_sup
+  return (torch.from_numpy(im).to(device))
+
+
+def testloader_cifar10(path, batch_size):
   transform = transforms.Compose([transforms.ToTensor(),
       transforms.Normalize([0.4914, 0.4822, 0.4465], [0.2023, 0.1994, 0.2010])])
 
@@ -75,17 +84,3 @@ def plot_examples(epsilons, examples):
       plt.imshow(ex, cmap="gray")
   plt.tight_layout()
   plt.show()
-
-
-def clamp_norm(img, inf, sup):
-  im = img.detach().cpu().numpy()
-  for channel in range(3):
-    lim_inf = (inf-mean[channel]) / std[channel]
-    lim_sup = (sup-mean[channel]) / std[channel]
-    for i, arr in enumerate(im[0][channel]):
-      for j, pixel in enumerate(arr):
-        if pixel < lim_inf:
-          im[0][channel][i][j] = lim_inf
-        elif pixel > lim_sup:
-          im[0][channel][i][j] = lim_sup
-  return (torch.from_numpy(im).to(device))
