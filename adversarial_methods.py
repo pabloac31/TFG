@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 
 import torch
+from utils_cifar10 import clamp_norm
+
 
 def fgsm(image, epsilon, data_grad):
   # Collect the element-wise sign of the data gradient

@@ -1,64 +1,85 @@
-# -*- coding: utf-8 -*-
-
-from __future__ import print_function
+import tensorflow as tf
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-from torchvision import datasets, transforms
-import numpy as np
-import matplotlib.pyplot as plt
 
+import matplotlib.pyplot as plt
+import numpy as np
+import time
+import math
+
+from PIL import Image
+import torchvision.transforms.functional as TF
+
+from tqdm import tqdm as pbar
+
+from utils_cifar10 import *
 from adversarial_methods import *
 
-mean, std = [0.4914, 0.4822, 0.4465], [0.2023, 0.1994, 0.2010]
 
+def test_fgsm(img, epsilon):
+  
+  model = iv3.to(device).eval()
+  
+  image = Image.open(img)
+  x = TF.to_tensor(image)
 
-def normalize(img):
   for channel in range(3):
-    img[channel] = (img[channel] - mean[channel]) / std[channel]
-  return img
+    x[channel] = (x[channel] - mean[channel]) / std[channel]
 
+  x = x.unsqueeze_(0).to(device)
 
-def denormalize(img):
+  label = torch.tensor([1]).to(device)
+
+  x.requires_grad = True
+
+  y = model(x)
+  init_pred = y.max(1, keepdim=True)[1]
+  print("Original image prediction: ", init_pred.item())
+
+  if init_pred.item() != label.item():
+    print("Image misclassified...")
+    return
+
+  # Calculate the loss
+  loss = F.nll_loss(y, label)
+
+  # Zero all existing gradients
+  model.zero_grad()
+
+  # Calculate gradients of model in backward pass
+  loss.backward()
+
+  # Collect datagrad
+  x_grad = x.grad.data
+
+  # Call FGSM attack
+  adv_x = fgsm(x, epsilon, x_grad)  #  +-28 pixeles en [0,255]
+
+  y_adv = model(adv_x)
+  adv_pred = y_adv.max(1, keepdim=True)[1]
+  print("Adversarial image prediction: ", adv_pred.item())
+
+  if adv_pred.item() == label.item():
+    print("Attack failed... try with a greater epsilon")
+
+  else:
+    print("Succesful attack!")
+
+  adv_ex = adv_x.squeeze().detach().cpu().numpy()
+
   for channel in range(3):
-    img[channel] = img[channel] * std[channel] + mean[channel]
-  return img
+    adv_ex[channel] = adv_ex[channel]*std[channel] + mean[channel]
+
+  adv_ex = np.transpose(adv_ex, (1,2,0))
+
+  plt.imshow(np.asarray(image))
+  plt.title('Original image')
+  plt.show()
+  plt.imshow(adv_ex)
+  plt.title('Adversarial image')
+  plt.show()
 
 
-def testloader(path, batch_size):
-  transform = transforms.Compose([transforms.ToTensor(),
-      transforms.Normalize([0.4914, 0.4822, 0.4465], [0.2023, 0.1994, 0.2010])])
-
-  test_loader = torch.utils.data.DataLoader(
-      datasets.CIFAR10(root=path, train=False, transform=transform, download=True),
-      batch_size=batch_size, shuffle=True
-  )
-
-  return test_loader
-
-
-def test_model(model, device, test_loader):
-    
-    model = model.to(device).eval()     
-    logs = {'Accuracy': 0.0}
-            
-    # Iterate over data
-    for image, label in pbar(test_loader):
-        image = image.to(device)
-        label = label.to(device)
-
-        with torch.no_grad():
-            prediction = model(image)
-            accuracy = torch.sum(torch.max(prediction, 1)[1] == label.data).item()
-            logs['Accuracy'] += accuracy
-
-    logs['Accuracy'] /= len(test_loader.dataset)
-    
-    return logs['Accuracy']
-
-
-def test_fgsm(model, device, test_loader, epsilon, iters=10000):
+def full_test_fgsm(model, device, test_loader, epsilon, iters=10000):
   
   # Initialize the network and set the model in evaluation mode. 
   model = model.to(device).eval()
@@ -139,35 +160,3 @@ def test_fgsm(model, device, test_loader, epsilon, iters=10000):
 
   # Return the accuracy and adversarial examples
   return final_acc, adv_examples
-
-
-def plot_examples(epsilons, examples):
-  cnt = 0
-  plt.figure(figsize=(8,10))
-  for i in range(len(epsilons)):
-    for j in range(len(examples[i])):
-      cnt += 1
-      plt.subplot(len(epsilons), len(examples[0]), cnt)
-      plt.xticks([], [])
-      plt.yticks([], [])
-      if j == 0:
-        plt.ylabel("Eps: {}".format(epsilons[i]), fontsize=14)
-      orig,adv,ex = examples[i][j]
-      plt.title("{} -> {}".format(orig, adv))
-      plt.imshow(ex, cmap="gray")
-  plt.tight_layout()
-  plt.show()
-
-
-def clamp_norm(img, inf, sup):
-  im = img.detach().cpu().numpy()
-  for channel in range(3):
-    lim_inf = (inf-mean[channel]) / std[channel]
-    lim_sup = (sup-mean[channel]) / std[channel]
-    for i, arr in enumerate(im[0][channel]):
-      for j, pixel in enumerate(arr):
-        if pixel < lim_inf:
-          im[0][channel][i][j] = lim_inf
-        elif pixel > lim_sup:
-          im[0][channel][i][j] = lim_sup
-  return (torch.from_numpy(im).to(device))
