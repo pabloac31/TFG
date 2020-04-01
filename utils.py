@@ -23,6 +23,7 @@ def denormalize_cifar10(img):
 
 
 def clamp_cifar10(img, inf, sup):
+  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
   im = img.detach().cpu().numpy()
   for channel in range(3):
     lim_inf = (inf-mean_cifar10[channel]) / std_cifar10[channel]

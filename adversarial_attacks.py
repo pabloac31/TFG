@@ -19,7 +19,7 @@ from utils import *
 from adversarial_methods import *
 
 
-def test_fgsm(model, img, epsilon):
+def test_fgsm(model, device, img, epsilon):
   
   model = model.to(device).eval()
   
