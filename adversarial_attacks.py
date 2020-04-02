@@ -168,8 +168,8 @@ def attack_model(model, device, test_loader, method, params, iters=10000):
   avg_confidence = confidence / float(iters)
   avg_time = total_time / float(iters)
   model_robustness = robustness / float(iters)
-  print("Epsilon: {}\nTest Accuracy = {} / {} = {}\nAverage confidence = {}\nAverage time = {}\nAverage magnitude of perturbations = {}\nModel robustness = {}"
-    .format(epsilon, correct, iters, final_acc, avg_confidence, avg_time, delta, model_robustness))  # len(test_loader)
+  print("Test Accuracy = {} / {} = {}\nAverage confidence = {}\nAverage time = {}\nAverage magnitude of perturbations = {}\nModel robustness = {}"
+    .format(correct, iters, final_acc, avg_confidence, avg_time, delta, model_robustness))  # len(test_loader)
 
   # Return the accuracy and adversarial examples
   return final_acc, adv_examples
