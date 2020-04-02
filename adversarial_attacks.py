@@ -20,9 +20,9 @@ from adversarial_methods import *
 
 
 def test_fgsm(model, device, img, epsilon):
-  
+
   model = model.to(device).eval()
-  
+
   image = Image.open(img)
   x = TF.to_tensor(image)
 
@@ -81,12 +81,31 @@ def test_fgsm(model, device, img, epsilon):
   plt.show()
 
 
-def full_test_fgsm(model, device, test_loader, epsilon, iters=10000):
-  
-  # Initialize the network and set the model in evaluation mode. 
+def fgsm(model, image, epsilon, output, label):
+  # Calculate the loss
+  loss = F.nll_loss(output, label)
+  # Zero all existing gradients
+  model.zero_grad()
+  # Calculate gradients of model in backward pass
+  loss.backward()
+  # Collect datagrad
+  data_grad = image.grad.data
+  # Collect the element-wise sign of the data gradient
+  sign_data_grad = data_grad.sign()
+  # Create the perturbed image by adjusting each pixel of the input image
+  perturbed_image = image + epsilon*sign_data_grad
+  # Adding clipping to maintain [0,1] range
+  perturbed_image = clamp_cifar10(perturbed_image, 0, 1)
+  # Return the perturbed image
+  return perturbed_image
+
+
+def attack_model(model, device, test_loader, method, params, iters=10000):
+
+  # Initialize the network and set the model in evaluation mode.
   model = model.to(device).eval()
 
-  # Accuracy counter
+  # Stat counters
   correct = 0
   confidence = 0
   total_time = 0
@@ -95,7 +114,7 @@ def full_test_fgsm(model, device, test_loader, epsilon, iters=10000):
 
   i = 0
 
-  # Loop all examples in test set
+  # Loop (iters) examples in test set
   for data, target in pbar(test_loader):
     if i >= iters:
       break
@@ -103,9 +122,11 @@ def full_test_fgsm(model, device, test_loader, epsilon, iters=10000):
 
     # Send the data and label to the device
     data, target = data.to(device), target.to(device)
-  
+
     # Set requires_grad attribute of tensor. Important for Attack
-    data.requires_grad = True
+    if method == 'fgsm':
+        print('fgsm')
+        data.requires_grad = True
 
     # Forward pass the data through the model
     output = model(data)
@@ -115,23 +136,12 @@ def full_test_fgsm(model, device, test_loader, epsilon, iters=10000):
     if init_pred.item() != target.item():
       continue
 
-    # Calculate the loss
-    loss = F.nll_loss(output, target)
-
-    # Zero all existing gradients
-    model.zero_grad()
-
-    # Calculate gradients of model in backward pass
-    loss.backward()
-
-    # Collect datagrad
-    data_grad = data.grad.data
-
-    # Call FGSM attack
-    time_ini = time.time()
-    perturbed_data = fgsm(data, epsilon, data_grad)
-    time_end = time.time()
-    total_time += time_end-time_ini
+    if method == 'fgsm':
+        # Call FGSM attack
+        time_ini = time.time()
+        perturbed_data = fgsm(model, data, epsilon, output, target)
+        time_end = time.time()
+        total_time += time_end-time_ini
 
     # Update model robustness
     delta = math.sqrt(32*32*3*epsilon**2)  # fgsm has a fixed delta(f,x) robustness
