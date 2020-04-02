@@ -101,14 +101,8 @@ def fgsm(model, image, epsilon, output, label):
 
 def attack_model(model, device, test_loader, method, params, iters=10000):
 
-  switch(method) {
-    case 'fgsm':
-      print('Using FGSM.')
-      break;
-    default:
-      print('Método no válido...')
-      break;
-  }
+  if method == 'fgsm':
+      print('>>>>>> Using FGSM <<<<<<')
 
   # Initialize the network and set the model in evaluation mode.
   model = model.to(device).eval()
@@ -146,12 +140,12 @@ def attack_model(model, device, test_loader, method, params, iters=10000):
     if method == 'fgsm':
         # Call FGSM attack
         time_ini = time.time()
-        perturbed_data = fgsm(model, data, epsilon, output, target)
+        perturbed_data = fgsm(model, data, params["epsilon"], output, target)
         time_end = time.time()
         total_time += time_end-time_ini
 
     # Update model robustness
-    delta = math.sqrt(32*32*3*epsilon**2)  # fgsm has a fixed delta(f,x) robustness
+    delta = math.sqrt(32*32*3*params["epsilon"]**2)  # fgsm has a fixed delta(f,x) robustness
     im_np = data.squeeze().detach().cpu().numpy()
     robustness += delta / np.linalg.norm(im_np.flatten(), ord=2)
 
