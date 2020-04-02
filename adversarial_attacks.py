@@ -41,20 +41,8 @@ def test_fgsm(model, device, img, epsilon):
     print("Image misclassified...")
     return
 
-  # Calculate the loss
-  loss = F.nll_loss(y, label)
-
-  # Zero all existing gradients
-  model.zero_grad()
-
-  # Calculate gradients of model in backward pass
-  loss.backward()
-
-  # Collect datagrad
-  x_grad = x.grad.data
-
   # Call FGSM attack
-  adv_x = fgsm(x, epsilon, x_grad)  #  +-28 pixeles en [0,255]
+  adv_x = fgsm(model, x, epsilon, Y, label)  #
 
   y_adv = model(adv_x)
   adv_pred = y_adv.max(1, keepdim=True)[1]
@@ -111,7 +99,8 @@ def attack_model(model, device, test_loader, method, params, iters=10000):
   correct = 0
   confidence = 0
   total_time = 0
-  robustness = 0
+  ex_robustness = 0
+  model_robustness = 0
   adv_examples = []
 
   i = 0
@@ -145,9 +134,13 @@ def attack_model(model, device, test_loader, method, params, iters=10000):
         total_time += time_end-time_ini
 
     # Update model robustness
-    delta = math.sqrt(32*32*3*params["epsilon"]**2)  # fgsm has a fixed delta(f,x) robustness
+    p_norm = 2
     im_np = data.squeeze().detach().cpu().numpy()
-    robustness += delta / np.linalg.norm(im_np.flatten(), ord=2)
+    adv_ex = perturbed_data.squeeze().detach().cpu().numpy()
+    delta = np.linalg.norm((adv_ex - im_np).flatten(), ord=p_norm)
+    #delta = math.sqrt(32*32*3*params["epsilon"]**2)  # fgsm has a fixed delta(f,x) robustness
+    ex_robustness += delta
+    model_robustness += delta / np.linalg.norm(im_np.flatten(), ord=p_norm)
 
     # Re-classify the perturbed image
     output = model(perturbed_data)
@@ -160,16 +153,17 @@ def attack_model(model, device, test_loader, method, params, iters=10000):
     else:
       # Save some adv examples for visualization later
       if len(adv_examples) < 5:
-        adv_ex = perturbed_data.squeeze().detach().cpu().numpy()
         adv_examples.append( (init_pred.item(), final_pred.item(), im_np, adv_ex) )
 
-  # Calculate final accuracy for this epsilon
+  # Calculate stats
   final_acc = correct / float(iters)  # len(test_loader)
   avg_confidence = confidence / float(iters)
   avg_time = total_time / float(iters)
-  model_robustness = robustness / float(iters)
+  avg_ex_robustness = ex_robustness / float(iters)
+  model_robustness = model_robustness / float(iters)
+  print("\n======== RESULTS ========")
   print("Test Accuracy = {} / {} = {}\nAverage confidence = {}\nAverage time = {}\nAverage magnitude of perturbations = {}\nModel robustness = {}"
-    .format(correct, iters, final_acc, avg_confidence, avg_time, delta, model_robustness))  # len(test_loader)
+    .format(correct, iters, final_acc, avg_confidence, avg_time, avg_ex_robustness, model_robustness)) 
 
-  # Return the accuracy and adversarial examples
-  return final_acc, adv_examples
+  # Return adversarial examples
+  return adv_examples
