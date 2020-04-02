@@ -16,7 +16,6 @@ import torchvision.transforms.functional as TF
 from tqdm import tqdm as pbar
 
 from utils import *
-from adversarial_methods import *
 
 
 def test_fgsm(model, device, img, epsilon):
@@ -102,6 +101,15 @@ def fgsm(model, image, epsilon, output, label):
 
 def attack_model(model, device, test_loader, method, params, iters=10000):
 
+  switch(method) {
+    case 'fgsm':
+      print('Using FGSM.')
+      break;
+    default:
+      print('Método no válido...')
+      break;
+  }
+
   # Initialize the network and set the model in evaluation mode.
   model = model.to(device).eval()
 
@@ -125,7 +133,6 @@ def attack_model(model, device, test_loader, method, params, iters=10000):
 
     # Set requires_grad attribute of tensor. Important for Attack
     if method == 'fgsm':
-        print('fgsm')
         data.requires_grad = True
 
     # Forward pass the data through the model
