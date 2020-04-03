@@ -5,10 +5,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import time
 import math
+import copy
 
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.autograd.gradcheck import zero_gradients
 
 from PIL import Image
 import torchvision.transforms.functional as TF
@@ -42,7 +44,7 @@ def test_fgsm(model, device, img, epsilon):
     return
 
   # Call FGSM attack
-  adv_x = fgsm(model, x, epsilon, Y, label)  #
+  adv_x = fgsm(model, x, epsilon, y, label)
 
   y_adv = model(adv_x)
   adv_pred = y_adv.max(1, keepdim=True)[1]
@@ -87,10 +89,69 @@ def fgsm(model, image, epsilon, output, label):
   return perturbed_image
 
 
-def attack_model(model, device, test_loader, method, params, iters=10000):
+def deepfool(model, device, image, label, output, num_classes=10, overshoot=0.02, max_iter=50):
+  # Classes ordered by probability (descending)
+  f_image = output.data.cpu().numpy().flatten()
+  I = f_image.argsort()[::-1]
+  I = I[0:num_classes]  # pick only num_classes
 
-  if method == 'fgsm':
-      print('>>>>>> Using FGSM <<<<<<')
+  # Start from original image (copy)
+  input_shape = image.cpu().detach().numpy()[0].shape   # (3,H,W)
+  pert_image = copy.deepcopy(image)   # tensor of size (1,3,H,W)
+  w = np.zeros(input_shape)
+  r_tot = np.zeros(input_shape)
+
+  loop_i = 0
+
+  x = pert_image.clone().detach().requires_grad_(True)
+  fs = model(x)
+  k_i = label
+
+  while k_i == label and loop_i < max_iter:
+
+    pert = np.inf
+    fs[0, I[0]].backward(retain_graph=True)
+    grad_orig = x.grad.data.cpu().numpy().copy()
+
+    for k in range(1, num_classes):
+      zero_gradients(x)
+
+      fs[0, I[k]].backward(retain_graph=True)
+      cur_grad = x.grad.data.cpu().numpy().copy()
+
+      # set new w_k and new f_k
+      w_k = cur_grad - grad_orig
+      f_k = (fs[0, I[k]] - fs[0, I[0]]).data.cpu().numpy()
+
+      pert_k = abs(f_k)/np.linalg.norm(w_k.flatten())
+
+      # determine which w_k to use
+      if pert_k < pert:
+        pert = pert_k
+        w = w_k
+
+    # compute r_i and r_tot
+    # Added 1e-4 for numerical stability
+    r_i = (pert+1e-4) * w / np.linalg.norm(w)
+    r_tot = np.float32(r_tot + r_i)
+
+    if device == torch.device("cuda"):
+      pert_image = image + (1+overshoot)*torch.from_numpy(r_tot).cuda()
+    else:
+      pert_image = image + (1+overshoot)*torch.from_numpy(r_tot)
+
+    x = pert_image.clone().detach().requires_grad_(True)
+    fs = model(x)
+    k_i = np.argmax(fs.data.cpu().numpy().flatten())
+
+    loop_i += 1
+
+  r_tot = (1+overshoot)*r_tot
+
+  return pert_image
+
+
+def attack_model(model, device, test_loader, method, params, iters=10000):
 
   # Initialize the network and set the model in evaluation mode.
   model = model.to(device).eval()
@@ -115,7 +176,7 @@ def attack_model(model, device, test_loader, method, params, iters=10000):
     data, target = data.to(device), target.to(device)
 
     # Set requires_grad attribute of tensor. Important for Attack
-    if method == 'fgsm':
+    if method in ['fgsm', 'deepfool']:
         data.requires_grad = True
 
     # Forward pass the data through the model
@@ -130,6 +191,13 @@ def attack_model(model, device, test_loader, method, params, iters=10000):
         # Call FGSM attack
         time_ini = time.time()
         perturbed_data = fgsm(model, data, params["epsilon"], output, target)
+        time_end = time.time()
+        total_time += time_end-time_ini
+
+    elif method == 'deepfool':
+        # Call DeepFool attack
+        time_ini = time.time()
+        perturbed_data = deepfool(model, device, data, target.item(), output, params["num_classes"], params["overshoot"], params["max_iter"])
         time_end = time.time()
         total_time += time_end-time_ini
 
@@ -163,7 +231,7 @@ def attack_model(model, device, test_loader, method, params, iters=10000):
   model_robustness = model_robustness / float(iters)
   print("\n======== RESULTS ========")
   print("Test Accuracy = {} / {} = {}\nAverage confidence = {}\nAverage time = {}\nAverage magnitude of perturbations = {}\nModel robustness = {}"
-    .format(correct, iters, final_acc, avg_confidence, avg_time, avg_ex_robustness, model_robustness)) 
+    .format(correct, iters, final_acc, avg_confidence, avg_time, avg_ex_robustness, model_robustness))
 
   # Return adversarial examples
   return adv_examples
