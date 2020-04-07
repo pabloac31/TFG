@@ -5,6 +5,7 @@ from torchvision import datasets, transforms
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm as pbar
+import copy
 
 
 mean_cifar10, std_cifar10 = [0.4914, 0.4822, 0.4465], [0.2023, 0.1994, 0.2010]
@@ -16,7 +17,7 @@ def normalize_cifar10(img):
   return img
 
 
-def denormalize_cifar10(img):
+def denormalize_cifar10(img):  # img of size (3,H,W)
   for channel in range(3):
     img[channel] = img[channel] * std_cifar10[channel] + mean_cifar10[channel]
   return img
@@ -37,9 +38,45 @@ def clamp_cifar10(img, inf, sup):
   return (torch.from_numpy(im).to(device))
 
 
+def clip_image_values(x, minv, maxv):
+    x = torch.max(x, minv)
+    x = torch.min(x, maxv)
+    return x
+
+
+# For SparseFool
+def valid_bounds_cifar10(img, delta=255):
+  # Deepcopy of the image as a numpy int array of range [0, 255]
+  im = copy.deepcopy(np.transpose(denormalize_cifar10(img.cpu().detach().numpy()[0]), (1,2,0)))
+  im *= 255
+  im = (np.around(im)).astype(np.int)
+
+  # General valid bounds [0, 255]
+  valid_lb = np.zeros_like(im)
+  valid_ub = np.full_like(im, 255)
+
+  # Compute the bounds
+  lb = im - delta
+  ub = im + delta
+
+  # Validate that the bounds are in [0, 255]
+  lb = np.maximum(valid_lb, np.minimum(lb, im))
+  ub = np.minimum(valid_ub, np.maximum(ub, im))
+
+  # Round and change types to uint8
+  lb = lb.astype(np.uint8)
+  ub = ub.astype(np.uint8)
+
+  # Convert to tensors and normalize (cifar10)
+  lb = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=mean_cifar10, std=std_cifar10)])(lb)
+  ub = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=mean_cifar10, std=std_cifar10)])(ub)
+
+  return lb, ub
+
+
 def testloader_cifar10(path, batch_size):
   transform = transforms.Compose([transforms.ToTensor(),
-      transforms.Normalize([0.4914, 0.4822, 0.4465], [0.2023, 0.1994, 0.2010])])
+      transforms.Normalize(mean=mean_cifar10, std=std_cifar10)])
 
   test_loader = torch.utils.data.DataLoader(
       datasets.CIFAR10(root=path, train=False, transform=transform, download=True),
@@ -50,10 +87,10 @@ def testloader_cifar10(path, batch_size):
 
 
 def test_model(model, device, test_loader):
-    
-    model = model.to(device).eval()     
+
+    model = model.to(device).eval()
     logs = {'Accuracy': 0.0}
-            
+
     # Iterate over data
     for image, label in pbar(test_loader):
         image = image.to(device)
@@ -65,7 +102,7 @@ def test_model(model, device, test_loader):
             logs['Accuracy'] += accuracy
 
     logs['Accuracy'] /= len(test_loader.dataset)
-    
+
     return logs['Accuracy']
 
 
