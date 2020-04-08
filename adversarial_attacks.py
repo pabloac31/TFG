@@ -90,7 +90,7 @@ def fgsm(model, image, epsilon, output, label):
   return perturbed_image
 
 
-def deepfool(model, device, image, num_classes=10, overshoot=0.02, max_iter=50, lambda_fac=3.):
+def deepfool(model, device, image, num_classes=10, overshoot=0.02, max_iter=50, lambda_fac=1.5):
 
   # Get the output of the original image
   output = model(image)
@@ -180,7 +180,7 @@ def deepfool(model, device, image, num_classes=10, overshoot=0.02, max_iter=50, 
   # Adding clipping to maintain [0,1] range !!!!
   #pert_image = clamp_cifar10(image + r_tot, 0, 1)
 
-  return grad, pert_image
+  return grad, pert_image, r_tot, loop_i
 
 
 def linear_solver(x_0, normal, boundary_point, lb, ub):
@@ -240,7 +240,7 @@ def sparsefool(model, device, x_0, label, lb, ub, lambda_=3., max_iter=20, epsil
   while fool_label == label and loops < max_iter:
 
     # Compute l2 adversarial perturbation (using DeepFool)
-    normal, x_adv = deepfool(model, device, x_i, lambda_fac=lambda_)
+    normal, x_adv,_,_ = deepfool(model, device, x_i, lambda_fac=lambda_)
 
     # Update x_i using the linear solver
     x_i = linear_solver(x_i, normal, x_adv, lb, ub)
@@ -257,6 +257,70 @@ def sparsefool(model, device, x_0, label, lb, ub, lambda_=3., max_iter=20, epsil
     loops += 1
 
   return fool_im
+
+
+def universal_perturbation(dataloader, model, device, delta=0.2, xi=10, max_iter_uni=10, p=2, num_classes=10, overshoot=0.02, max_iter_df=10):
+
+  # Initialize the network and set the model in evaluation mode.
+  model = model.to(device).eval()
+
+  fooling_rate = 0.0
+  itr = 0
+  num_images = 1000
+
+  x,_ = next(iter(dataloader))
+  input_shape = x.size()
+  v = torch.zeros(input_shape).to(device)  # torch.Size([1, 3, 32, 32])
+
+  while fooling_rate < 1-delta and itr < max_iter_uni:
+
+    print('Starting pass number ', itr)
+
+    fooling_rate = 0.0
+
+    # Go through the data set and compute the perturbation increments sequentially
+    i = 0
+    for image, label in pbar(dataloader):
+      if i >= num_images:
+        break
+      i = i+1
+
+      image, label = image.to(device), label.to(device)
+
+      image_v = image.add(v).to(device)
+      image_v.requires_grad = True
+
+      if model(image_v).max(1, keepdim=True)[1] == model(image).max(1, keepdim=True)[1]:
+
+        # Compute adversarial perturbation
+        _, _, dr, loop_i = deepfool(model, device, image_v, num_classes=num_classes, overshoot=overshoot, max_iter=max_iter_df)
+
+        # Make sure it converged...
+        if loop_i < max_iter_df-1:
+          v = v.add(dr)
+
+          # Project on the lp ball centered at 0 and of radius xi
+          if p == 2:
+            v = v * min(1, xi / v.norm())
+          elif p == np.inf:
+            v = torch.sign(v) * torch.min(torch.abs(v), torch.full_like(v, xi))
+
+    itr += 1
+
+    # Update fooling rate
+    i = 0
+    for image, label in dataloader:
+      if i >= num_images:
+        break
+      i += 1
+      image, label = image.to(device), label.to(device)
+      image_v = image.add(v).to(device)
+      if model(image + v).max(1, keepdim=True)[1].item() != model(image).max(1, keepdim=True)[1].item():
+        fooling_rate += 1
+    fooling_rate /= num_images
+    print('fooling_rate: ', fooling_rate)
+
+  return v
 
 
 def attack_model(model, device, test_loader, method, params, iters=10000):

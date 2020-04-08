@@ -74,13 +74,13 @@ def valid_bounds_cifar10(img, delta=255):
   return lb, ub
 
 
-def testloader_cifar10(path, batch_size):
+def testloader_cifar10(path, batch_size, shuffle=True):
   transform = transforms.Compose([transforms.ToTensor(),
       transforms.Normalize(mean=mean_cifar10, std=std_cifar10)])
 
   test_loader = torch.utils.data.DataLoader(
       datasets.CIFAR10(root=path, train=False, transform=transform, download=True),
-      batch_size=batch_size, shuffle=True
+      batch_size=batch_size, shuffle=shuffle
   )
 
   return test_loader
