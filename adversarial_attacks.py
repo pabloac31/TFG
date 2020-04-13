@@ -393,7 +393,7 @@ def one_pixel_attack(model, device, img, label, target_label=None, iters=100, po
   return is_success(), best_solution, best_score
 
 
-ddef attack_model(model, device, test_loader, method, params, iters=10000):
+def attack_model(model, device, test_loader, method, params, iters=10000):
 
   # Initialize the network and set the model in evaluation mode.
   model = model.to(device).eval()
