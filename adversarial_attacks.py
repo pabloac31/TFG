@@ -323,7 +323,77 @@ def universal_perturbation(dataloader, model, device, delta=0.2, xi=10, max_iter
   return v
 
 
-def attack_model(model, device, test_loader, method, params, iters=10000):
+def perturb(p, img):
+  # Elements of p should be in range [0,1]
+  img_size = img.size(2)  # H (= W)
+  p_img = img.clone()
+  xy = (p[0:2].copy() * img_size).astype(int)  # pixel x-y coordinates
+  xy = np.clip(xy, 0, img_size-1)
+  rgb = normalize_cifar10(p[2:5]).copy()
+  rgb = clip_image_values(torch.from_numpy(rgb), normalize_cifar10(torch.tensor([0.,0.,0.], dtype=torch.double)), normalize_cifar10(torch.tensor([1.,1.,1.], dtype=torch.double)))
+  p_img[0,:,xy[0],xy[1]] = rgb
+  return p_img
+
+
+def evaluate(model, device, candidates, img, label):
+  preds = []
+  model = model.to(device).eval()
+  with torch.no_grad():
+    for i, xs in enumerate(candidates):
+      p_img = perturb(xs, img).to(device)
+      preds.append(F.softmax(model(p_img).squeeze(), dim=0)[label].item())
+  return np.array(preds)
+
+
+def evolve(candidates, F=0.5, strategy="clip"):
+  gen2 = candidates.copy()
+  num_candidates = len(candidates)
+  for i in range(num_candidates):
+    x1, x2, x3 = candidates[np.random.choice(num_candidates, 3, replace=False)]
+    x_next = (x1 + F * (x2 - x3))
+    if strategy == "clip":
+        gen2[i] = np.clip(x_next, 0, 1)
+    elif strategy == "resample":
+        x_oob = np.logical_or((x_next < 0), (1 < x_next))
+        x_next[x_oob] = np.random.random(5)[x_oob]
+        gen2[i] = x_next
+  return gen2
+
+
+def one_pixel_attack(model, device, img, label, target_label=None, iters=100, pop_size=400, verbose=True):
+  # Targeted: maximize target_label if given (early stop > 50%)
+  # Untargeted: minimize true_label otherwise (early stop < 5%)
+  candidates = np.random.random((pop_size,5))
+  candidates[:,2:5] = np.clip(np.random.normal(0.5, 0.5, (pop_size, 3)), 0, 1)
+  is_targeted = target_label is not None
+  label = target_label if is_targeted else label
+  fitness = evaluate(model, device, candidates, img, label)
+
+  def is_success():
+      return (is_targeted and fitness.max() > 0.5) or ((not is_targeted) and fitness.min() < 0.05)
+
+  for iteration in range(iters):
+      # Early Stopping
+      if is_success():
+          break
+      if verbose and iteration%1 == 0: # Print progress
+          print("Target Probability [Iteration {}]:".format(iteration), fitness.max() if is_targeted else fitness.min())
+      # Generate new candidate solutions
+      new_gen_candidates = evolve(candidates, strategy="resample")
+      # Evaluate new solutions
+      new_gen_fitness = evaluate(model, device, new_gen_candidates, img, label)
+      # Replace old solutions with new ones where they are better
+      successors = new_gen_fitness > fitness if is_targeted else new_gen_fitness < fitness
+      candidates[successors] = new_gen_candidates[successors]
+      fitness[successors] = new_gen_fitness[successors]
+  best_idx = fitness.argmax() if is_targeted else fitness.argmin()
+  best_solution = candidates[best_idx]
+  best_score = fitness[best_idx]
+
+  return is_success(), best_solution, best_score
+
+
+ddef attack_model(model, device, test_loader, method, params, iters=10000):
 
   # Initialize the network and set the model in evaluation mode.
   model = model.to(device).eval()
@@ -379,10 +449,20 @@ def attack_model(model, device, test_loader, method, params, iters=10000):
         lb, ub =  valid_bounds_cifar10(data, delta)
         lb = lb[None, :, :, :].to(device)
         ub = ub[None, :, :, :].to(device)
+        # Call SparseFool attack
         time_ini = time.time()
         perturbed_data = sparsefool(model, device, data, target.item(), lb, ub, params["lambda_"], params["max_iter"], params["epsilon"])
         time_end = time.time()
         total_time += time_end-time_ini
+
+    elif method == 'one_pixel_attack':
+        # Call one pixel attack
+        time_ini = time.time()
+        _, best_sol, score = one_pixel_attack(model, device, data, target.item(), params["target_label"], params["iters"], params["pop_size"], params["verbose"])
+        perturbed_data = perturb(best_sol, data)
+        time_end = time.time()
+        total_time += time_end-time_ini
+
 
     # Update model robustness
     p_norm = 2
