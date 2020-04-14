@@ -21,57 +21,9 @@ from tqdm import tqdm as pbar
 from utils import *
 
 
-def test_fgsm(model, device, img, epsilon):
+""""""""""""""""""" FAST GRADIENT SIGN METHOD """""""""""""""""""
 
-  model = model.to(device).eval()
-
-  image = Image.open(img)
-  x = TF.to_tensor(image)
-
-  x = normalize_cifar10(x)
-
-  x = x.unsqueeze_(0).to(device)
-
-  label = torch.tensor([1]).to(device)
-
-  x.requires_grad = True
-
-  y = model(x)
-  init_pred = y.max(1, keepdim=True)[1]
-  print("Original image prediction: ", init_pred.item())
-
-  if init_pred.item() != label.item():
-    print("Image misclassified...")
-    return
-
-  # Call FGSM attack
-  adv_x = fgsm(model, x, epsilon, y, label)
-
-  y_adv = model(adv_x)
-  adv_pred = y_adv.max(1, keepdim=True)[1]
-  print("Adversarial image prediction: ", adv_pred.item())
-
-  if adv_pred.item() == label.item():
-    print("Attack failed... try with a greater epsilon")
-
-  else:
-    print("Succesful attack!")
-
-  adv_ex = adv_x.squeeze().detach().cpu().numpy()
-
-  adv_ex = denormalize_cifar10(adv_ex)
-
-  adv_ex = np.transpose(adv_ex, (1,2,0))
-
-  plt.imshow(np.asarray(image))
-  plt.title('Original image')
-  plt.show()
-  plt.imshow(adv_ex)
-  plt.title('Adversarial image')
-  plt.show()
-
-
-def fgsm(model, image, epsilon, output, label):
+def fgsm(model, image, label, output, epsilon, clip=True, dataset='cifar10'):
   # Calculate the loss
   loss = F.nll_loss(output, label)
   # Zero all existing gradients
@@ -82,12 +34,19 @@ def fgsm(model, image, epsilon, output, label):
   data_grad = image.grad.data
   # Collect the element-wise sign of the data gradient
   sign_data_grad = data_grad.sign()
+  # Create the perturbation (considering data normalization)
+  std = std_cifar10 if dataset=='cifar10' else [0,0,0]
+  adv_pert = sign_data_grad
+  adv_pert[0][0] = adv_pert[0][0] * (epsilon / std[0])
+  adv_pert[0][1] = adv_pert[0][1] * (epsilon / std[1])
+  adv_pert[0][2] = adv_pert[0][2] * (epsilon / std[2])
   # Create the perturbed image by adjusting each pixel of the input image
-  perturbed_image = image + epsilon*sign_data_grad
+  perturbed_image = image + adv_pert
   # Adding clipping to maintain [0,1] range
-  perturbed_image = clamp_cifar10(perturbed_image, 0, 1)
-  # Return the perturbed image
-  return perturbed_image
+  if clip:
+    perturbed_image = clamp(perturbed_image, 0, 1, dataset)
+  # Return the perturbed image and the perturbation
+  return perturbed_image, adv_pert
 
 
 def deepfool(model, device, image, num_classes=10, overshoot=0.02, max_iter=50, lambda_fac=1.5):
@@ -323,24 +282,24 @@ def universal_perturbation(dataloader, model, device, delta=0.2, xi=10, max_iter
   return v
 
 
-def perturb(p, img):
+def perturb(p, img, dataset='cifar10'):
   # Elements of p should be in range [0,1]
   img_size = img.size(2)  # H (= W)
   p_img = img.clone()
   xy = (p[0:2].copy() * img_size).astype(int)  # pixel x-y coordinates
   xy = np.clip(xy, 0, img_size-1)
-  rgb = normalize_cifar10(p[2:5]).copy()
-  rgb = clip_image_values(torch.from_numpy(rgb), normalize_cifar10(torch.tensor([0.,0.,0.], dtype=torch.double)), normalize_cifar10(torch.tensor([1.,1.,1.], dtype=torch.double)))
+  rgb = normalize(p[2:5], dataset=dataset).copy()
+  rgb = clip_image_values(torch.from_numpy(rgb), normalize(torch.tensor([0.,0.,0.], dtype=torch.double), dataset=dataset), normalize(torch.tensor([1.,1.,1.], dtype=torch.double),  dataset=dataset))
   p_img[0,:,xy[0],xy[1]] = rgb
   return p_img
 
 
-def evaluate(model, device, candidates, img, label):
+def evaluate(model, device, candidates, img, label, dataset='cifar10'):
   preds = []
   model = model.to(device).eval()
   with torch.no_grad():
     for i, xs in enumerate(candidates):
-      p_img = perturb(xs, img).to(device)
+      p_img = perturb(xs, img, dataset).to(device)
       preds.append(F.softmax(model(p_img).squeeze(), dim=0)[label].item())
   return np.array(preds)
 
@@ -360,14 +319,14 @@ def evolve(candidates, F=0.5, strategy="clip"):
   return gen2
 
 
-def one_pixel_attack(model, device, img, label, target_label=None, iters=100, pop_size=400, verbose=True):
+def one_pixel_attack(model, device, img, label, target_label=None, iters=100, pop_size=400, verbose=True, dataset='cifar10'):
   # Targeted: maximize target_label if given (early stop > 50%)
   # Untargeted: minimize true_label otherwise (early stop < 5%)
   candidates = np.random.random((pop_size,5))
   candidates[:,2:5] = np.clip(np.random.normal(0.5, 0.5, (pop_size, 3)), 0, 1)
   is_targeted = target_label is not None
   label = target_label if is_targeted else label
-  fitness = evaluate(model, device, candidates, img, label)
+  fitness = evaluate(model, device, candidates, img, label, dataset)
 
   def is_success():
       return (is_targeted and fitness.max() > 0.5) or ((not is_targeted) and fitness.min() < 0.05)
@@ -381,7 +340,7 @@ def one_pixel_attack(model, device, img, label, target_label=None, iters=100, po
       # Generate new candidate solutions
       new_gen_candidates = evolve(candidates, strategy="resample")
       # Evaluate new solutions
-      new_gen_fitness = evaluate(model, device, new_gen_candidates, img, label)
+      new_gen_fitness = evaluate(model, device, new_gen_candidates, img, label, dataset)
       # Replace old solutions with new ones where they are better
       successors = new_gen_fitness > fitness if is_targeted else new_gen_fitness < fitness
       candidates[successors] = new_gen_candidates[successors]
@@ -393,13 +352,76 @@ def one_pixel_attack(model, device, img, label, target_label=None, iters=100, po
   return is_success(), best_solution, best_score
 
 
-def attack_model(model, device, test_loader, method, params, iters=10000):
+# Test the desired method in one image
+def test_method(model, device, img, label, method, params):
+
+  model = model.to(device).eval()
+
+  x = img.to(device)
+  label = label.to(device)
+
+  x.requires_grad = True
+
+  y = model(x)
+  init_pred = y.max(1, keepdim=True)[1]
+
+  if init_pred.item() != label.item():
+    print("Wrong classification...")
+    return
+
+  # Call method
+  if method == 'fgsm':
+    adv_x, pert_x = fgsm(model, x, label, y, params["epsilon"], params["clip"])
+
+  elif method == 'deepfool':
+    adv_x = deepfool(model, device, data, params["num_classes"], params["overshoot"], params["max_iter"], params["lambda_fac"])[1]
+
+  elif method == 'sparsefool':
+    # Generate lower and upper bounds
+    delta = params["delta"]
+    lb, ub =  valid_bounds_cifar10(data, delta)
+    lb = lb[None, :, :, :].to(device)
+    ub = ub[None, :, :, :].to(device)
+    adv_x = sparsefool(model, device, data, target.item(), lb, ub, params["lambda_"], params["max_iter"], params["epsilon"])
+
+  elif method == 'one_pixel_attack':
+    _, best_sol, score = one_pixel_attack(model, device, data, target.item(), params["target_label"], params["iters"], params["pop_size"], params["verbose"])
+    adv_x = perturb(best_sol, data)
+
+  y_adv = model(adv_x)
+  adv_pred = y_adv.max(1, keepdim=True)[1]
+
+  if adv_pred.item() == label.item():
+    print("Attack failed...")
+
+  else:
+    print("Succesful attack!")
+
+  f = plt.figure()
+  f.add_subplot(1,3,1)
+  plt.title('Original image -> ' + str(label.item()))
+  plt.axis('off')
+  plt.imshow(displayable(img))
+  f.add_subplot(1,3,2)
+  plt.title('Perturbation')
+  plt.axis('off')
+  plt.imshow(displayable(pert_x.cpu().detach()))
+  f.add_subplot(1,3,3)
+  plt.title('Adv. image -> ' + str(adv_pred.item()))
+  plt.axis('off')
+  plt.imshow(displayable(adv_x.cpu().detach()))
+  plt.show(block=True)
+
+
+# Performs an attack and shows the results achieved by some method
+def attack_model(model, device, test_loader, method, params, iters=10000, dataset='cifar10'):
 
   # Initialize the network and set the model in evaluation mode.
   model = model.to(device).eval()
 
-  # Stat counters
+  # Initialize stat counters
   correct = 0
+  incorrect = 0
   confidence = 0
   total_time = 0
   ex_robustness = 0
@@ -417,7 +439,7 @@ def attack_model(model, device, test_loader, method, params, iters=10000):
     # Send the data and label to the device
     data, target = data.to(device), target.to(device)
 
-    # Set requires_grad attribute of tensor. Important for Attack
+    # Set requires_grad attribute of tensor (important for some attacks)
     if method in ['fgsm', 'deepfool', 'sparsefool']:
         data.requires_grad = True
 
@@ -432,7 +454,7 @@ def attack_model(model, device, test_loader, method, params, iters=10000):
     if method == 'fgsm':
         # Call FGSM attack
         time_ini = time.time()
-        perturbed_data = fgsm(model, data, params["epsilon"], output, target)
+        perturbed_data, _ = fgsm(model, data, target, output, params["epsilon"], params["clip"], dataset)
         time_end = time.time()
         total_time += time_end-time_ini
 
@@ -465,32 +487,35 @@ def attack_model(model, device, test_loader, method, params, iters=10000):
 
 
     # Update model robustness
-    p_norm = 2
-    im_np = data.squeeze().detach().cpu().numpy()
-    adv_ex = perturbed_data.squeeze().detach().cpu().numpy()
-    adv_rob = np.linalg.norm((adv_ex - im_np).flatten(), ord=p_norm)
+    # multiply by std to make it independent of the normalization used
+    difference = de_scale(perturbed_data-data, dataset)
+    adv_rob = torch.norm(difference)  # Frobenius norm (p=2)
     ex_robustness += adv_rob
-    model_robustness += adv_rob / np.linalg.norm(im_np.flatten(), ord=p_norm)
+    model_robustness += adv_rob / torch.norm(denormalize(data[0], dataset))
 
     # Re-classify the perturbed image
     output = model(perturbed_data)
 
     # Check for success
     final_pred = output.max(1, keepdim=True)[1] # get the index of the max log-probability
-    confidence += F.softmax(output, dim=1).max(1, keepdim=True)[0].item()  # adv. confidence
+
     if final_pred.item() == target.item():
       correct += 1
+
     else:
+      incorrect += 1
+      # Update average confidence
+      confidence += F.softmax(output, dim=1).max(1, keepdim=True)[0].item()
       # Save some adv examples for visualization later
       if len(adv_examples) < 5:
-        adv_examples.append( (init_pred.item(), final_pred.item(), im_np, adv_ex) )
+        adv_examples.append( (init_pred.item(), final_pred.item(), data.detach().cpu(), perturbed_data.detach().cpu()) )
 
   # Calculate stats
   final_acc = correct / float(iters)  # len(test_loader)
-  avg_confidence = confidence / float(iters)
-  avg_time = total_time / float(iters)
-  avg_ex_robustness = ex_robustness / float(iters)
-  model_robustness = model_robustness / float(iters)
+  avg_confidence = confidence / float(incorrect)
+  avg_time = total_time / float(correct+incorrect)
+  avg_ex_robustness = ex_robustness / float(correct+incorrect)
+  model_robustness = model_robustness / float(correct+incorrect)
   print("\n======== RESULTS ========")
   print("Test Accuracy = {} / {} = {}\nAverage confidence = {}\nAverage time = {}\nAverage magnitude of perturbations = {}\nModel robustness = {}"
     .format(correct, iters, final_acc, avg_confidence, avg_time, avg_ex_robustness, model_robustness))

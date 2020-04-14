@@ -8,46 +8,91 @@ from tqdm import tqdm as pbar
 import copy
 
 
+# CIFAR10 mean and std for normalization
 mean_cifar10, std_cifar10 = [0.4914, 0.4822, 0.4465], [0.2023, 0.1994, 0.2010]
 
+# Returns a DataLoader of CIFAR10 test set
+def testloader_cifar10(path, batch_size, shuffle=True):
+  transform = transforms.Compose([transforms.ToTensor(),
+      transforms.Normalize(mean=mean_cifar10, std=std_cifar10)])
 
-def normalize_cifar10(img):
+  test_loader = torch.utils.data.DataLoader(
+      datasets.CIFAR10(root=path, train=False, transform=transform, download=True),
+      batch_size=batch_size, shuffle=shuffle
+  )
+
+  return test_loader
+
+
+# Shows the accuracy of the model
+def test_model(model, device, test_loader):
+
+    model = model.to(device).eval()
+    logs = {'Accuracy': 0.0}
+
+    # Iterate over data
+    for image, label in pbar(test_loader):
+        image = image.to(device)
+        label = label.to(device)
+
+        with torch.no_grad():
+            prediction = model(image)
+            accuracy = torch.sum(torch.max(prediction, 1)[1] == label.data).item()
+            logs['Accuracy'] += accuracy
+
+    logs['Accuracy'] /= len(test_loader.dataset)
+
+    return logs['Accuracy']
+
+
+def normalize(img, dataset='cifar10'):  # img of size (3,H,W)
+  mean = mean_cifar10 if dataset=='cifar10' else [0,0,0]
+  std = std_cifar10 if dataset=='cifar10' else [0,0,0]
   for channel in range(3):
-    img[channel] = (img[channel] - mean_cifar10[channel]) / std_cifar10[channel]
+    img[channel] = (img[channel] - mean[channel]) / std[channel]
   return img
 
 
-def denormalize_cifar10(img):  # img of size (3,H,W)
+def denormalize(img, dataset='cifar10'):  # img of size (3,H,W)
+  mean = mean_cifar10 if dataset=='cifar10' else [0,0,0]
+  std = std_cifar10 if dataset=='cifar10' else [0,0,0]
   for channel in range(3):
-    img[channel] = img[channel] * std_cifar10[channel] + mean_cifar10[channel]
+    img[channel] = img[channel] * std[channel] + mean[channel]
   return img
 
 
-def clamp_cifar10(img, inf, sup):
-  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-  im = img.detach().cpu().numpy()
-  for channel in range(3):
-    lim_inf = (inf-mean_cifar10[channel]) / std_cifar10[channel]
-    lim_sup = (sup-mean_cifar10[channel]) / std_cifar10[channel]
-    for i, arr in enumerate(im[0][channel]):
-      for j, pixel in enumerate(arr):
-        if pixel < lim_inf:
-          im[0][channel][i][j] = lim_inf
-        elif pixel > lim_sup:
-          im[0][channel][i][j] = lim_sup
-  return (torch.from_numpy(im).to(device))
+def de_scale(x, dataset='cifar10'):  # x: tensor of size 1xCxHxW
+  std = std_cifar10 if dataset=='cifar10' else [0,0,0]
+  x[0][0] *= std[0]
+  x[0][1] *= std[1]
+  x[0][2] *= std[2]
+  return x
 
 
+# Keep tensor values between two tensors values
 def clip_image_values(x, minv, maxv):
     x = torch.max(x, minv)
     x = torch.min(x, maxv)
     return x
 
 
+# Clamp normalized image values in the desired range (no-normalized)
+def clamp(img, inf, sup, dataset='cifar10'):
+  mean = mean_cifar10 if dataset=='cifar10' else [0,0,0]
+  std = std_cifar10 if dataset=='cifar10' else [0,0,0]
+  for channel in range(3):
+    lim_inf = (inf-mean[channel]) / std[channel]
+    lim_sup = (sup-mean[channel]) / std[channel]
+    img[0][channel] = clip_image_values(img[0][channel], torch.full_like(img[0][channel], lim_inf), torch.full_like(img[0][channel], lim_sup))
+  return img
+
+
 # For SparseFool
-def valid_bounds_cifar10(img, delta=255):
+def valid_bounds(img, delta=255, dataset='cifar10'):
+  mean = mean_cifar10 if dataset=='cifar10' else [0,0,0]
+  std = std_cifar10 if dataset=='cifar10' else [0,0,0]
   # Deepcopy of the image as a numpy int array of range [0, 255]
-  im = copy.deepcopy(np.transpose(denormalize_cifar10(img.cpu().detach().numpy()[0]), (1,2,0)))
+  im = copy.deepcopy(np.transpose(denormalize(img.cpu().detach().numpy()[0], dataset=dataset), (1,2,0)))
   im *= 255
   im = (np.around(im)).astype(np.int)
 
@@ -67,43 +112,18 @@ def valid_bounds_cifar10(img, delta=255):
   lb = lb.astype(np.uint8)
   ub = ub.astype(np.uint8)
 
-  # Convert to tensors and normalize (cifar10)
-  lb = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=mean_cifar10, std=std_cifar10)])(lb)
-  ub = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=mean_cifar10, std=std_cifar10)])(ub)
+  # Convert to tensors and normalize
+  lb = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=mean, std=std)])(lb)
+  ub = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=mean, std=std)])(ub)
 
   return lb, ub
 
 
-def testloader_cifar10(path, batch_size, shuffle=True):
-  transform = transforms.Compose([transforms.ToTensor(),
-      transforms.Normalize(mean=mean_cifar10, std=std_cifar10)])
-
-  test_loader = torch.utils.data.DataLoader(
-      datasets.CIFAR10(root=path, train=False, transform=transform, download=True),
-      batch_size=batch_size, shuffle=shuffle
-  )
-
-  return test_loader
-
-
-def test_model(model, device, test_loader):
-
-    model = model.to(device).eval()
-    logs = {'Accuracy': 0.0}
-
-    # Iterate over data
-    for image, label in pbar(test_loader):
-        image = image.to(device)
-        label = label.to(device)
-
-        with torch.no_grad():
-            prediction = model(image)
-            accuracy = torch.sum(torch.max(prediction, 1)[1] == label.data).item()
-            logs['Accuracy'] += accuracy
-
-    logs['Accuracy'] /= len(test_loader.dataset)
-
-    return logs['Accuracy']
+# Convert a tensor to a plt displayable numpy array in range [0,255]
+def displayable(img, dataset='cifar10'):  # tensor of size 1xCxHxW
+  d_img = np.transpose(denormalize(img.squeeze().numpy(), dataset=dataset), (1,2,0))
+  d_img *= 255
+  return d_img.astype(np.uint8)
 
 
 def plot_examples(epsilons, examples):
