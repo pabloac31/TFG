@@ -119,11 +119,9 @@ def valid_bounds(img, delta=255, dataset='cifar10'):
   return lb, ub
 
 
-# Convert a tensor to a plt displayable numpy array in range [0,255]
+# Convert a tensor to a plt displayable numpy array in range [0,1]
 def displayable(img, dataset='cifar10'):  # tensor of size 1xCxHxW
-  d_img = np.transpose(denormalize(img.squeeze().numpy(), dataset=dataset), (1,2,0))
-  d_img *= 255
-  return d_img.astype(np.uint8)
+  return np.transpose(denormalize(img.squeeze().numpy(), dataset=dataset), (1,2,0))
 
 
 def plot_examples(epsilons, examples):
