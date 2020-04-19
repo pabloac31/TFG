@@ -35,7 +35,7 @@ def fgsm(model, image, label, output, epsilon, clip=True, dataset='cifar10'):
   # Collect the element-wise sign of the data gradient
   sign_data_grad = data_grad.sign()
   # Create the perturbation (considering data normalization)
-  std = std_cifar10 if dataset=='cifar10' else [0,0,0]
+  std = std_cifar10 if dataset=='cifar10' else [1,1,1]
   adv_pert = sign_data_grad
   adv_pert[0][0] = adv_pert[0][0] * (epsilon / std[0])
   adv_pert[0][1] = adv_pert[0][1] * (epsilon / std[1])
@@ -49,7 +49,7 @@ def fgsm(model, image, label, output, epsilon, clip=True, dataset='cifar10'):
   return perturbed_image, adv_pert
 
 
-def deepfool(model, device, image, num_classes=10, overshoot=0.02, max_iter=50, lambda_fac=1.5):
+def deepfool(model, device, image, num_classes=10, overshoot=0.02, max_iter=50, clip=False, dataset='cifar10'):
 
   # Get the output of the original image
   output = model(image)
@@ -113,7 +113,13 @@ def deepfool(model, device, image, num_classes=10, overshoot=0.02, max_iter=50, 
     pert_image = pert_image + r_i  # x_(i+1) <- x_i + r_i
 
     # Adding overshoot
-    check_fool = image + (1 + overshoot) * r_tot
+    std = std_cifar10 if dataset=='cifar10' else [1,1,1]
+    #check_fool = image + (1 + overshoot) * r_tot
+    check_fool = copy.deepcopy(image)
+    check_fool[0][0] += (1 + overshoot/std[0]) * r_tot[0][0]
+    check_fool[0][1] += (1 + overshoot/std[1]) * r_tot[0][1]
+    check_fool[0][2] += (1 + overshoot/std[2]) * r_tot[0][2]
+
     x = check_fool.clone().detach().requires_grad_(True)
     # output for x_(i+1)
     fs = model(x)
@@ -131,13 +137,17 @@ def deepfool(model, device, image, num_classes=10, overshoot=0.02, max_iter=50, 
   grad = grad / grad.norm()
 
   # Include lambda_fac in the adversarial perturbation
-  r_tot = lambda_fac * r_tot
-
+  #r_tot = lambda_fac * r_tot
+  r_tot[0][0] *= 1 + (overshoot / std[0])
+  r_tot[0][1] *= 1 + (overshoot / std[1])
+  r_tot[0][2] *= 1 + (overshoot / std[2])
   # Update adverarial image (pert_image = image + r_tot)
   p_im = image.detach().cpu().numpy() + r_tot.detach().cpu().numpy() # for deepcopy
   pert_image = torch.from_numpy(p_im).to(device)
-  # Adding clipping to maintain [0,1] range !!!!
-  #pert_image = clamp_cifar10(image + r_tot, 0, 1)
+
+  # Adding clipping to maintain [0,1] range
+  if clip:
+    pert_image = clamp(image + r_tot, 0, 1, dataset)
 
   return grad, pert_image, r_tot, loop_i
 
@@ -374,7 +384,7 @@ def test_method(model, device, img, label, method, params):
     adv_x, pert_x = fgsm(model, x, label, y, params["epsilon"], params["clip"])
 
   elif method == 'deepfool':
-    adv_x = deepfool(model, device, data, params["num_classes"], params["overshoot"], params["max_iter"], params["lambda_fac"])[1]
+    _, adv_x, pert_x, n_iter = deepfool(model, device, x, params["num_classes"], params["overshoot"], params["max_iter"])
 
   elif method == 'sparsefool':
     # Generate lower and upper bounds
@@ -411,6 +421,9 @@ def test_method(model, device, img, label, method, params):
   plt.axis('off')
   plt.imshow(displayable(adv_x.cpu().detach()))
   plt.show(block=True)
+
+  if method == 'deepfool':
+    print('Number of iterations needed: ', n_iter)
 
 
 # Performs an attack and shows the results achieved by some method
@@ -461,7 +474,7 @@ def attack_model(model, device, test_loader, method, params, iters=10000, datase
     elif method == 'deepfool':
         # Call DeepFool attack
         time_ini = time.time()
-        perturbed_data = deepfool(model, device, data, params["num_classes"], params["overshoot"], params["max_iter"], params["lambda_fac"])[1]
+        perturbed_data = deepfool(model, device, data, params["num_classes"], params["overshoot"], params["max_iter"])[1]
         time_end = time.time()
         total_time += time_end-time_ini
 
@@ -490,8 +503,10 @@ def attack_model(model, device, test_loader, method, params, iters=10000, datase
     # multiply by std to make it independent of the normalization used
     difference = de_scale(perturbed_data-data, dataset)
     adv_rob = torch.norm(difference)  # Frobenius norm (p=2)
+    #adv_rov = torch.norm(difference, float('inf'))  # Inf norm (p=inf)
     ex_robustness += adv_rob
-    model_robustness += adv_rob / torch.norm(denormalize(data[0], dataset))
+    model_robustness += adv_rob / torch.norm(de_scale(data, dataset))
+    #model_robustness += adv_rob / torch.norm(de_scale(data, dataset), float('inf'))
 
     # Re-classify the perturbed image
     output = model(perturbed_data)
