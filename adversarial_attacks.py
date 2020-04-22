@@ -49,7 +49,7 @@ def fgsm(model, image, label, output, epsilon, clip=True, dataset='cifar10'):
   return perturbed_image, adv_pert
 
 
-def deepfool(model, device, image, num_classes=10, overshoot=0.02, max_iter=50, clip=False, dataset='cifar10'):
+def deepfool(model, device, image, num_classes=10, overshoot=0.02, max_iter=50, p=2, clip=False, dataset='cifar10'):
 
   # Get the output of the original image
   output = model(image)
@@ -98,7 +98,10 @@ def deepfool(model, device, image, num_classes=10, overshoot=0.02, max_iter=50, 
       f_k = (fs[0, I[k]] - fs[0, I[0]]).data
 
       # Calculate hyperplane-k distance
-      pert_k = torch.abs(f_k) / w_k.norm()  # Frobenious norm (2-norm)
+      if p == 2:
+        pert_k = torch.abs(f_k) / w_k.norm()  # Frobenious norm (2-norm)
+      elif p == np.inf:
+        pert_k = torch.abs(f_k) / w_k.norm(1) # 1-norm
 
       # determine which w_k to use
       if pert_k < pert:
@@ -106,19 +109,18 @@ def deepfool(model, device, image, num_classes=10, overshoot=0.02, max_iter=50, 
         w = w_k + 0.
 
     # compute r_i and r_tot
-    r_i = torch.clamp(pert, min=1e-4) * w / w.norm()  # Added 1e-4 for numerical stability
+    if p == 2:
+      r_i = torch.clamp(pert, min=1e-4) * w / w.norm()  # Added 1e-4 for numerical stability
+    elif p == np.inf:
+      r_i = torch.clamp(pert, min=1e-4) * torch.sign(w)
+
     r_tot = r_tot + r_i
 
     # Update perturbed image
     pert_image = pert_image + r_i  # x_(i+1) <- x_i + r_i
 
     # Adding overshoot
-    std = std_cifar10 if dataset=='cifar10' else [1,1,1]
-    #check_fool = image + (1 + overshoot) * r_tot
-    check_fool = copy.deepcopy(image)
-    check_fool[0][0] += (1 + overshoot/std[0]) * r_tot[0][0]
-    check_fool[0][1] += (1 + overshoot/std[1]) * r_tot[0][1]
-    check_fool[0][2] += (1 + overshoot/std[2]) * r_tot[0][2]
+    check_fool = image + (1 + overshoot) * r_tot
 
     x = check_fool.clone().detach().requires_grad_(True)
     # output for x_(i+1)
@@ -136,18 +138,19 @@ def deepfool(model, device, image, num_classes=10, overshoot=0.02, max_iter=50, 
   grad = copy.deepcopy(x.grad.data)
   grad = grad / grad.norm()
 
-  # Include lambda_fac in the adversarial perturbation
-  #r_tot = lambda_fac * r_tot
-  r_tot[0][0] *= 1 + (overshoot / std[0])
-  r_tot[0][1] *= 1 + (overshoot / std[1])
-  r_tot[0][2] *= 1 + (overshoot / std[2])
+  # Include overshoot in the adversarial perturbation
+  r_tot = (1 + overshoot) * r_tot
+
   # Update adverarial image (pert_image = image + r_tot)
-  p_im = image.detach().cpu().numpy() + r_tot.detach().cpu().numpy() # for deepcopy
-  pert_image = torch.from_numpy(p_im).to(device)
+  #p_im = image.detach().cpu().numpy() + r_tot.detach().cpu().numpy() # for deepcopy
+  #pert_image = torch.from_numpy(p_im).to(device)
 
   # Adding clipping to maintain [0,1] range
   if clip:
     pert_image = clamp(image + r_tot, 0, 1, dataset)
+
+  else:
+    pert_image = image + r_tot
 
   return grad, pert_image, r_tot, loop_i
 
@@ -365,6 +368,8 @@ def one_pixel_attack(model, device, img, label, target_label=None, iters=100, po
 # Test the desired method in one image
 def test_method(model, device, img, label, method, params):
 
+  img = img.clone()
+
   model = model.to(device).eval()
 
   x = img.to(device)
@@ -374,6 +379,7 @@ def test_method(model, device, img, label, method, params):
 
   y = model(x)
   init_pred = y.max(1, keepdim=True)[1]
+  x_conf = F.softmax(y, dim=1).max(1, keepdim=True)[0].item()
 
   if init_pred.item() != label.item():
     print("Wrong classification...")
@@ -384,7 +390,7 @@ def test_method(model, device, img, label, method, params):
     adv_x, pert_x = fgsm(model, x, label, y, params["epsilon"], params["clip"])
 
   elif method == 'deepfool':
-    _, adv_x, pert_x, n_iter = deepfool(model, device, x, params["num_classes"], params["overshoot"], params["max_iter"])
+    _, adv_x, pert_x, n_iter = deepfool(model, device, x, params["num_classes"], params["overshoot"], params["max_iter"], params["p"], params["clip"])
 
   elif method == 'sparsefool':
     # Generate lower and upper bounds
@@ -400,6 +406,7 @@ def test_method(model, device, img, label, method, params):
 
   y_adv = model(adv_x)
   adv_pred = y_adv.max(1, keepdim=True)[1]
+  adv_x_conf = F.softmax(y_adv, dim=1).max(1, keepdim=True)[0].item()
 
   if adv_pred.item() == label.item():
     print("Attack failed...")
@@ -409,16 +416,18 @@ def test_method(model, device, img, label, method, params):
 
   f = plt.figure()
   f.add_subplot(1,3,1)
-  plt.title('Original image -> ' + str(label.item()))
+  plt.title('Original image')
   plt.axis('off')
+  f.text(.25, .3, cifar10_classes[label.item()] + ' ({:.2f}%)'.format(x_conf*100), ha='center')
   plt.imshow(displayable(img))
   f.add_subplot(1,3,2)
   plt.title('Perturbation')
   plt.axis('off')
   plt.imshow(displayable(pert_x.cpu().detach()))
   f.add_subplot(1,3,3)
-  plt.title('Adv. image -> ' + str(adv_pred.item()))
+  plt.title('Adv. image')
   plt.axis('off')
+  f.text(.8, .3, cifar10_classes[adv_pred.item()] + ' ({:.2f}%)'.format(adv_x_conf*100), ha='center')
   plt.imshow(displayable(adv_x.cpu().detach()))
   plt.show(block=True)
 
@@ -427,7 +436,7 @@ def test_method(model, device, img, label, method, params):
 
 
 # Performs an attack and shows the results achieved by some method
-def attack_model(model, device, test_loader, method, params, iters=10000, dataset='cifar10'):
+def attack_model(model, device, test_loader, method, params, p=2, iters=10000, dataset='cifar10'):
 
   # Initialize the network and set the model in evaluation mode.
   model = model.to(device).eval()
@@ -439,6 +448,7 @@ def attack_model(model, device, test_loader, method, params, iters=10000, datase
   total_time = 0
   ex_robustness = 0
   model_robustness = 0
+  method_iters = 0
   adv_examples = []
 
   i = 0
@@ -474,9 +484,10 @@ def attack_model(model, device, test_loader, method, params, iters=10000, datase
     elif method == 'deepfool':
         # Call DeepFool attack
         time_ini = time.time()
-        perturbed_data = deepfool(model, device, data, params["num_classes"], params["overshoot"], params["max_iter"])[1]
+        _, perturbed_data, _, n_iter = deepfool(model, device, data, params["num_classes"], params["overshoot"], params["max_iter"], params["p"], params["clip"])
         time_end = time.time()
         total_time += time_end-time_ini
+        method_iters += n_iter
 
     elif method == 'sparsefool':
         # Generate lower and upper bounds
@@ -502,11 +513,13 @@ def attack_model(model, device, test_loader, method, params, iters=10000, datase
     # Update model robustness
     # multiply by std to make it independent of the normalization used
     difference = de_scale(perturbed_data-data, dataset)
-    adv_rob = torch.norm(difference)  # Frobenius norm (p=2)
-    #adv_rov = torch.norm(difference, float('inf'))  # Inf norm (p=inf)
+    if p == 2:
+      adv_rob = torch.norm(difference)  # Frobenius norm (p=2)
+      model_robustness += adv_rob / torch.norm(de_scale(data, dataset))
+    elif p == np.inf:
+      adv_rob = torch.norm(difference, float('inf'))  # Inf norm (p=inf)
+      model_robustness += adv_rob / torch.norm(de_scale(data, dataset), float('inf'))
     ex_robustness += adv_rob
-    model_robustness += adv_rob / torch.norm(de_scale(data, dataset))
-    #model_robustness += adv_rob / torch.norm(de_scale(data, dataset), float('inf'))
 
     # Re-classify the perturbed image
     output = model(perturbed_data)
@@ -532,8 +545,11 @@ def attack_model(model, device, test_loader, method, params, iters=10000, datase
   avg_ex_robustness = ex_robustness / float(correct+incorrect)
   model_robustness = model_robustness / float(correct+incorrect)
   print("\n======== RESULTS ========")
-  print("Test Accuracy = {} / {} = {}\nAverage confidence = {}\nAverage time = {}\nAverage magnitude of perturbations = {}\nModel robustness = {}"
+  print("Test Accuracy = {} / {} = {:.4f}\nAverage confidence = {:.4f}\nAverage time = {:.4f}\nAverage magnitude of perturbations = {:.4f}\nModel robustness = {:.4f}"
     .format(correct, iters, final_acc, avg_confidence, avg_time, avg_ex_robustness, model_robustness))
+
+  if method == 'deepfool':
+    print("Avg. iters = {:.2f}".format(method_iters / float(correct+incorrect)))
 
   # Return adversarial examples
   return adv_examples

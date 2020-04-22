@@ -11,6 +11,8 @@ import copy
 # CIFAR10 mean and std for normalization
 mean_cifar10, std_cifar10 = [0.4914, 0.4822, 0.4465], [0.2023, 0.1994, 0.2010]
 
+cifar10_classes = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
+
 # Returns a DataLoader of CIFAR10 test set
 def testloader_cifar10(path, batch_size, shuffle=True):
   transform = transforms.Compose([transforms.ToTensor(),
@@ -79,7 +81,7 @@ def clip_image_values(x, minv, maxv):
 # Clamp normalized image values in the desired range (no-normalized)
 def clamp(img, inf, sup, dataset='cifar10'):
   mean = mean_cifar10 if dataset=='cifar10' else [0,0,0]
-  std = std_cifar10 if dataset=='cifar10' else [0,0,0]
+  std = std_cifar10 if dataset=='cifar10' else [1,1,1]
   for channel in range(3):
     lim_inf = (inf-mean[channel]) / std[channel]
     lim_sup = (sup-mean[channel]) / std[channel]
