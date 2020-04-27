@@ -1,24 +1,16 @@
-import tensorflow as tf
-import torch
-
-import matplotlib.pyplot as plt
-import numpy as np
 import time
 import math
-import copy
 import statistics
 
+import tensorflow as tf
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.autograd import Variable
 from torch.autograd.gradcheck import zero_gradients
-
-from PIL import Image
 import torchvision.transforms.functional as TF
 
-from tqdm import tqdm as pbar
-
+from PIL import Image
 from utils import *
 
 
