@@ -92,7 +92,7 @@ def clamp(img, inf, sup, dataset='cifar10'):
 # For SparseFool
 def valid_bounds(img, delta=255, dataset='cifar10'):
   mean = mean_cifar10 if dataset=='cifar10' else [0,0,0]
-  std = std_cifar10 if dataset=='cifar10' else [0,0,0]
+  std = std_cifar10 if dataset=='cifar10' else [1,1,1]
   # Deepcopy of the image as a numpy int array of range [0, 255]
   im = copy.deepcopy(np.transpose(denormalize(img.cpu().detach().numpy()[0], dataset=dataset), (1,2,0)))
   im *= 255
@@ -119,6 +119,14 @@ def valid_bounds(img, delta=255, dataset='cifar10'):
   ub = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=mean, std=std)])(ub)
 
   return lb, ub
+
+
+def unravel_index(index, shape):
+    out = []
+    for dim in reversed(shape):
+        out.append(index % dim)
+        index = index // dim
+    return tuple(reversed(out))
 
 
 # Convert a tensor to a plt displayable numpy array in range [0,1]

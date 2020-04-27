@@ -6,6 +6,7 @@ import numpy as np
 import time
 import math
 import copy
+import statistics
 
 import torch.nn as nn
 import torch.nn.functional as F
@@ -49,18 +50,25 @@ def fgsm(model, image, label, output, epsilon, clip=True, dataset='cifar10'):
   return perturbed_image, adv_pert
 
 
-def deepfool(model, device, image, num_classes=10, overshoot=0.02, max_iter=50, p=2, clip=False, dataset='cifar10'):
+""""""""""""""""""""""""""" DEEPFOOL """""""""""""""""""""""""""
+
+def deepfool(model, device, im, num_classes=10, overshoot=0.02, lambda_fac=1.01, max_iter=50, p=2, clip=False, dataset='cifar10'):
+
+  image = copy.deepcopy(im)
+
+  # Get the input image shape
+  input_shape = image.size()
 
   # Get the output of the original image
   output = model(image)
-  # Get the input image shape
-  input_shape = image.size()
+
   # Array with the class probabilities of the image
   f_image = output.data.cpu().numpy().flatten()
   # Classes ordered by probability (descending)
   I = f_image.argsort()[::-1]
   # We consider only 'num_classes' classes
   I = I[0:num_classes]
+
   # Get the predicted label
   label = I[0]
 
@@ -83,7 +91,7 @@ def deepfool(model, device, image, num_classes=10, overshoot=0.02, max_iter=50, 
 
     # Calculate grad(f_label(x_i))
     fs[0, I[0]].backward(retain_graph=True)
-    grad_orig = grad_orig = copy.deepcopy(x.grad.data)
+    grad_orig = copy.deepcopy(x.grad.data)
 
     for k in range(1, num_classes):  # for k != label
       # Reset gradients
@@ -138,22 +146,20 @@ def deepfool(model, device, image, num_classes=10, overshoot=0.02, max_iter=50, 
   grad = copy.deepcopy(x.grad.data)
   grad = grad / grad.norm()
 
-  # Include overshoot in the adversarial perturbation
-  r_tot = (1 + overshoot) * r_tot
-
-  # Update adverarial image (pert_image = image + r_tot)
-  #p_im = image.detach().cpu().numpy() + r_tot.detach().cpu().numpy() # for deepcopy
-  #pert_image = torch.from_numpy(p_im).to(device)
+  # Include lambda_fac in the adversarial perturbation
+  r_tot = lambda_fac * r_tot  # for SparseFool
 
   # Adding clipping to maintain [0,1] range
   if clip:
     pert_image = clamp(image + r_tot, 0, 1, dataset)
 
   else:
-    pert_image = image + r_tot
+    pert_image = (image + r_tot).clone().detach()
 
   return grad, pert_image, r_tot, loop_i
 
+
+""""""""""""""""""""""""" SPARSEFOOL """""""""""""""""""""""""
 
 def linear_solver(x_0, normal, boundary_point, lb, ub):
 
@@ -165,7 +171,7 @@ def linear_solver(x_0, normal, boundary_point, lb, ub):
   plane_normal = copy.deepcopy(coord_vec).view(-1)
   plane_point = copy.deepcopy(boundary_point).view(-1)
 
-  x_i = copy.deepcopy(x_0)   # x_i <- x_0
+  x_i = copy.deepcopy(x_0)   # x(0) <- x_0
 
   # "Linearized" classifier
   f_k = torch.dot(plane_normal, x_0.view(-1) - plane_point)
@@ -173,6 +179,8 @@ def linear_solver(x_0, normal, boundary_point, lb, ub):
 
   beta = 0.001 * sign_true
   current_sign = sign_true
+
+  #print('sign_true', sign_true)
 
   while current_sign == sign_true and coord_vec.nonzero().size()[0] > 0:  # while w^T(x_i - x_B) != 0
 
@@ -183,10 +191,10 @@ def linear_solver(x_0, normal, boundary_point, lb, ub):
     pert = f_k.abs() / coord_vec.abs().max()
 
     mask = torch.zeros_like(coord_vec)
-    mask[np.unravel_index(torch.argmax(coord_vec.abs().cpu()), input_shape)] = 1.
+    mask[unravel_index(torch.argmax(coord_vec.abs()), input_shape)] = 1.
 
     # Update r_i
-    r_i = torch.clamp(pert, min=1e-4) * mask * coord_vec.sign()
+    r_i = torch.clamp(pert, min=1e-4) * mask * (-sign_true * coord_vec.sign())  # added -sign_true !!!
 
     # Update perturbation with the desired constraints
     x_i = x_i + r_i
@@ -198,7 +206,7 @@ def linear_solver(x_0, normal, boundary_point, lb, ub):
 
     coord_vec[r_i != 0] = 0
 
-  return x_i.detach().cpu().numpy()  # for deepcopy
+  return x_i.detach()  # for deepcopy
 
 
 def sparsefool(model, device, x_0, label, lb, ub, lambda_=3., max_iter=20, epsilon=0.02):
@@ -216,7 +224,6 @@ def sparsefool(model, device, x_0, label, lb, ub, lambda_=3., max_iter=20, epsil
 
     # Update x_i using the linear solver
     x_i = linear_solver(x_i, normal, x_adv, lb, ub)
-    x_i = torch.from_numpy(x_i).to(device)  # necessary for deepcopy
 
     # Adding epsilon to compute fool_im
     fool_im = x_0 + (1 + epsilon) * (x_i - x_0)
@@ -228,7 +235,8 @@ def sparsefool(model, device, x_0, label, lb, ub, lambda_=3., max_iter=20, epsil
 
     loops += 1
 
-  return fool_im
+  r = fool_im - x_0
+  return fool_im, r, loops
 
 
 def universal_perturbation(dataloader, model, device, delta=0.2, xi=10, max_iter_uni=10, p=2, num_classes=10, overshoot=0.02, max_iter_df=10):
@@ -390,15 +398,15 @@ def test_method(model, device, img, label, method, params):
     adv_x, pert_x = fgsm(model, x, label, y, params["epsilon"], params["clip"])
 
   elif method == 'deepfool':
-    _, adv_x, pert_x, n_iter = deepfool(model, device, x, params["num_classes"], params["overshoot"], params["max_iter"], params["p"], params["clip"])
+    _, adv_x, pert_x, n_iter = deepfool(model, device, x, params["num_classes"], overshoot=params["overshoot"], max_iter=params["max_iter"], p=params["p"], clip=params["clip"])
 
   elif method == 'sparsefool':
     # Generate lower and upper bounds
     delta = params["delta"]
-    lb, ub =  valid_bounds_cifar10(data, delta)
+    lb, ub =  valid_bounds(x, delta, dataset='cifar10')
     lb = lb[None, :, :, :].to(device)
     ub = ub[None, :, :, :].to(device)
-    adv_x = sparsefool(model, device, data, target.item(), lb, ub, params["lambda_"], params["max_iter"], params["epsilon"])
+    adv_x, pert_x, n_iter = sparsefool(model, device, x, label.item(), lb, ub, params["lambda_"], params["max_iter"], params["epsilon"])
 
   elif method == 'one_pixel_attack':
     _, best_sol, score = one_pixel_attack(model, device, data, target.item(), params["target_label"], params["iters"], params["pop_size"], params["verbose"])
@@ -431,8 +439,12 @@ def test_method(model, device, img, label, method, params):
   plt.imshow(displayable(adv_x.cpu().detach()))
   plt.show(block=True)
 
-  if method == 'deepfool':
+  if method in ['deepfool',  'sparsefool']:
     print('Number of iterations needed: ', n_iter)
+
+  if method == 'sparsefool':
+    pert_pixels = pert_x.flatten().nonzero().size(0)
+    print('Number of perturbed pixels: ', pert_pixels)
 
 
 # Performs an attack and shows the results achieved by some method
@@ -449,6 +461,7 @@ def attack_model(model, device, test_loader, method, params, p=2, iters=10000, d
   ex_robustness = 0
   model_robustness = 0
   method_iters = 0
+  n_pert_pixels = []
   adv_examples = []
 
   i = 0
@@ -484,7 +497,7 @@ def attack_model(model, device, test_loader, method, params, p=2, iters=10000, d
     elif method == 'deepfool':
         # Call DeepFool attack
         time_ini = time.time()
-        _, perturbed_data, _, n_iter = deepfool(model, device, data, params["num_classes"], params["overshoot"], params["max_iter"], params["p"], params["clip"])
+        _, perturbed_data, _, n_iter = deepfool(model, device, data, params["num_classes"], overshoot=params["overshoot"], max_iter=params["max_iter"], p=params["p"], clip=params["clip"])
         time_end = time.time()
         total_time += time_end-time_ini
         method_iters += n_iter
@@ -492,14 +505,16 @@ def attack_model(model, device, test_loader, method, params, p=2, iters=10000, d
     elif method == 'sparsefool':
         # Generate lower and upper bounds
         delta = params["delta"]
-        lb, ub =  valid_bounds_cifar10(data, delta)
+        lb, ub =  valid_bounds(data, delta, dataset='cifar10')
         lb = lb[None, :, :, :].to(device)
         ub = ub[None, :, :, :].to(device)
         # Call SparseFool attack
         time_ini = time.time()
-        perturbed_data = sparsefool(model, device, data, target.item(), lb, ub, params["lambda_"], params["max_iter"], params["epsilon"])
+        perturbed_data, perturbation, n_iter = sparsefool(model, device, data, target.item(), lb, ub, params["lambda_"], params["max_iter"], params["epsilon"])
         time_end = time.time()
         total_time += time_end-time_ini
+        method_iters += n_iter
+        n_pert_pixels.append(perturbation.flatten().nonzero().size(0))
 
     elif method == 'one_pixel_attack':
         # Call one pixel attack
@@ -548,8 +563,12 @@ def attack_model(model, device, test_loader, method, params, p=2, iters=10000, d
   print("Test Accuracy = {} / {} = {:.4f}\nAverage confidence = {:.4f}\nAverage time = {:.4f}\nAverage magnitude of perturbations = {:.4f}\nModel robustness = {:.4f}"
     .format(correct, iters, final_acc, avg_confidence, avg_time, avg_ex_robustness, model_robustness))
 
-  if method == 'deepfool':
+  if method in ['deepfool', 'sparsefool']:
     print("Avg. iters = {:.2f}".format(method_iters / float(correct+incorrect)))
+
+  if method == 'sparsefool':
+    print("Median num. of pixels perturbed = ", statistics.median(n_pert_pixels))
+    print("Average num. of pixels perturbed = {:.2f}".format(statistics.mean(n_pert_pixels)))
 
   # Return adversarial examples
   return adv_examples
