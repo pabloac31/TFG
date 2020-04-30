@@ -295,74 +295,104 @@ def universal_perturbation(dataloader, model, device, delta=0.2, xi=10, max_iter
   return v
 
 
+""""""""""""""" ONE PIXEL ATTACK """""""""""""""
+
 def perturb(p, img, dataset='cifar10'):
   # Elements of p should be in range [0,1]
   img_size = img.size(2)  # H (= W)
   p_img = img.clone()
-  xy = (p[0:2].copy() * img_size).astype(int)  # pixel x-y coordinates
-  xy = np.clip(xy, 0, img_size-1)
-  rgb = normalize(p[2:5], dataset=dataset).copy()
-  rgb = clip_image_values(torch.from_numpy(rgb), normalize(torch.tensor([0.,0.,0.], dtype=torch.double), dataset=dataset), normalize(torch.tensor([1.,1.,1.], dtype=torch.double),  dataset=dataset))
-  p_img[0,:,xy[0],xy[1]] = rgb
+
+  for pert in p:
+    # Convert x-y coordinates to range [0,img_size)
+    xy = (pert[0:2].copy() * img_size).astype(int)
+    xy = np.clip(xy, 0, img_size-1)
+
+    # Normalize RGB pixel values and clip to maintain the correct range
+    rgb = normalize(pert[2:5].copy(), dataset=dataset)
+    rgb = clip_image_values(torch.from_numpy(rgb), min_rgb[dataset], max_rgb[dataset])
+
+    # Change correponding pixels of the image
+    p_img[0,:,xy[0],xy[1]] = rgb
+
   return p_img
 
 
 def evaluate(model, device, candidates, img, label, dataset='cifar10'):
   preds = []
-  model = model.to(device).eval()
+  # model = model.to(device).eval()  # already in eval mode when called
   with torch.no_grad():
     for i, xs in enumerate(candidates):
+      # Calculate the perturbed image
       p_img = perturb(xs, img, dataset).to(device)
+      # Append the probability of the target label
       preds.append(F.softmax(model(p_img).squeeze(), dim=0)[label].item())
   return np.array(preds)
 
 
-def evolve(candidates, F=0.5, strategy="clip"):
+def evolve(candidates, d, F=0.5, strategy="clip"):
   gen2 = candidates.copy()
   num_candidates = len(candidates)
   for i in range(num_candidates):
-    x1, x2, x3 = candidates[np.random.choice(num_candidates, 3, replace=False)]
-    x_next = (x1 + F * (x2 - x3))
-    if strategy == "clip":
-        gen2[i] = np.clip(x_next, 0, 1)
-    elif strategy == "resample":
-        x_oob = np.logical_or((x_next < 0), (1 < x_next))
-        x_next[x_oob] = np.random.random(5)[x_oob]
-        gen2[i] = x_next
+    for p in range(d):
+      # Apply usual DE formula
+      rdm_idx = np.random.choice(num_candidates * d, 3, replace=False)
+      x1, x2, x3 = candidates[rdm_idx % num_candidates, rdm_idx // num_candidates]
+      x_next = (x1 + F * (x2 - x3))
+      if strategy == "clip":
+          gen2[i,p] = np.clip(x_next, 0, 1)
+      elif strategy == "resample":
+          x_oob = np.logical_or((x_next < 0), (1 < x_next))
+          x_next[x_oob] = np.random.random(5)[x_oob]
+          gen2[i,p] = x_next
   return gen2
 
 
-def one_pixel_attack(model, device, img, label, target_label=None, iters=100, pop_size=400, verbose=True, dataset='cifar10'):
+def one_pixel_attack(model, device, img, label, d=1, target_label=None, iters=100, pop_size=400, verbose=True, dataset='cifar10'):
+
   # Targeted: maximize target_label if given (early stop > 50%)
-  # Untargeted: minimize true_label otherwise (early stop < 5%)
-  candidates = np.random.random((pop_size,5))
-  candidates[:,2:5] = np.clip(np.random.normal(0.5, 0.5, (pop_size, 3)), 0, 1)
+  # Untargeted: minimize true_label otherwise (early stop < 10%)
+
+  # Initialize population
+  candidates = np.random.random((pop_size, d, 5))
+  # RGB values in range [0,1] from a Gaussian distribution N(0.5,0.5)
+  candidates[:,:,2:5] = np.clip(np.random.normal(0.5, 0.5, (pop_size, d, 3)), 0, 1)
+
+  # Select label for a targeted / non-targeted attack
   is_targeted = target_label is not None
   label = target_label if is_targeted else label
+
+  # Initial score (prob. of each perturbation)
   fitness = evaluate(model, device, candidates, img, label, dataset)
 
+  scores = []
+
   def is_success():
-      return (is_targeted and fitness.max() > 0.5) or ((not is_targeted) and fitness.min() < 0.05)
+      return (is_targeted and fitness.max() > 0.5) or ((not is_targeted) and fitness.min() < 0.1)
 
   for iteration in range(iters):
       # Early Stopping
       if is_success():
           break
+
       if verbose and iteration%1 == 0: # Print progress
-          print("Target Probability [Iteration {}]:".format(iteration), fitness.max() if is_targeted else fitness.min())
+          print("Target Probability [Iteration {}]: {:.4f}".format(iteration, fitness.max() if is_targeted else fitness.min()))
+          scores.append(fitness.max() if is_targeted else fitness.min())
+
       # Generate new candidate solutions
-      new_gen_candidates = evolve(candidates, strategy="resample")
+      new_gen_candidates = evolve(candidates, d, strategy="resample")
       # Evaluate new solutions
       new_gen_fitness = evaluate(model, device, new_gen_candidates, img, label, dataset)
       # Replace old solutions with new ones where they are better
       successors = new_gen_fitness > fitness if is_targeted else new_gen_fitness < fitness
       candidates[successors] = new_gen_candidates[successors]
       fitness[successors] = new_gen_fitness[successors]
+
+  # Select best candidate
   best_idx = fitness.argmax() if is_targeted else fitness.argmin()
   best_solution = candidates[best_idx]
   best_score = fitness[best_idx]
 
-  return is_success(), best_solution, best_score
+  return perturb(best_solution, img), iteration, scores
 
 
 # Test the desired method in one image
@@ -375,7 +405,8 @@ def test_method(model, device, img, label, method, params):
   x = img.to(device)
   label = label.to(device)
 
-  x.requires_grad = True
+  if method in ['fgsm', 'deepfool', 'sparsefool']:
+    x.requires_grad = True
 
   y = model(x)
   init_pred = y.max(1, keepdim=True)[1]
@@ -401,8 +432,8 @@ def test_method(model, device, img, label, method, params):
     adv_x, pert_x, n_iter = sparsefool(model, device, x, label.item(), lb, ub, params["lambda_"], params["max_iter"], params["epsilon"])
 
   elif method == 'one_pixel_attack':
-    _, best_sol, score = one_pixel_attack(model, device, data, target.item(), params["target_label"], params["iters"], params["pop_size"], params["verbose"])
-    adv_x = perturb(best_sol, data)
+    adv_x, n_iter, scores = one_pixel_attack(model, device, x, label.item(), params["dim"], params["target_label"], params["iters"], params["pop_size"], params["verbose"])
+    pert_x = adv_x - x
 
   y_adv = model(adv_x)
   adv_pred = y_adv.max(1, keepdim=True)[1]
@@ -431,12 +462,15 @@ def test_method(model, device, img, label, method, params):
   plt.imshow(displayable(adv_x.cpu().detach()))
   plt.show(block=True)
 
-  if method in ['deepfool',  'sparsefool']:
+  if method in ['deepfool',  'sparsefool', 'one_pixel_attack']:
     print('Number of iterations needed: ', n_iter)
 
   if method == 'sparsefool':
     pert_pixels = pert_x.flatten().nonzero().size(0)
     print('Number of perturbed pixels: ', pert_pixels)
+
+  if method == 'one_pixel_attack':
+    return scores
 
 
 # Performs an attack and shows the results achieved by some method
@@ -511,10 +545,10 @@ def attack_model(model, device, test_loader, method, params, p=2, iters=10000, d
     elif method == 'one_pixel_attack':
         # Call one pixel attack
         time_ini = time.time()
-        _, best_sol, score = one_pixel_attack(model, device, data, target.item(), params["target_label"], params["iters"], params["pop_size"], params["verbose"])
-        perturbed_data = perturb(best_sol, data)
+        perturbed_data, n_iter, _ = one_pixel_attack(model, device, data, target.item(), params["dim"], params["target_label"], params["iters"], params["pop_size"], params["verbose"])
         time_end = time.time()
         total_time += time_end-time_ini
+        method_iters += n_iter
 
 
     # Update model robustness
@@ -555,7 +589,7 @@ def attack_model(model, device, test_loader, method, params, p=2, iters=10000, d
   print("Test Accuracy = {} / {} = {:.4f}\nAverage confidence = {:.4f}\nAverage time = {:.4f}\nAverage magnitude of perturbations = {:.4f}\nModel robustness = {:.4f}"
     .format(correct, iters, final_acc, avg_confidence, avg_time, avg_ex_robustness, model_robustness))
 
-  if method in ['deepfool', 'sparsefool']:
+  if method in ['deepfool', 'sparsefool', 'one_pixel_attack']:
     print("Avg. iters = {:.2f}".format(method_iters / float(correct+incorrect)))
 
   if method == 'sparsefool':

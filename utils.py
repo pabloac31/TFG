@@ -49,22 +49,26 @@ def test_model(model, device, test_loader):
 
 def normalize(img, dataset='cifar10'):  # img of size (3,H,W)
   mean = mean_cifar10 if dataset=='cifar10' else [0,0,0]
-  std = std_cifar10 if dataset=='cifar10' else [0,0,0]
+  std = std_cifar10 if dataset=='cifar10' else [1,1,1]
   for channel in range(3):
     img[channel] = (img[channel] - mean[channel]) / std[channel]
   return img
 
 
+min_rgb = {'cifar10': normalize(torch.tensor([0.,0.,0.], dtype=torch.double), dataset='cifar10')}
+max_rgb = {'cifar10': normalize(torch.tensor([1.,1.,1.], dtype=torch.double), dataset='cifar10')}
+
+
 def denormalize(img, dataset='cifar10'):  # img of size (3,H,W)
   mean = mean_cifar10 if dataset=='cifar10' else [0,0,0]
-  std = std_cifar10 if dataset=='cifar10' else [0,0,0]
+  std = std_cifar10 if dataset=='cifar10' else [1,1,1]
   for channel in range(3):
     img[channel] = img[channel] * std[channel] + mean[channel]
   return img
 
 
 def de_scale(x, dataset='cifar10'):  # x: tensor of size 1xCxHxW
-  std = std_cifar10 if dataset=='cifar10' else [0,0,0]
+  std = std_cifar10 if dataset=='cifar10' else [1,1,1]
   x[0][0] *= std[0]
   x[0][1] *= std[1]
   x[0][2] *= std[2]
