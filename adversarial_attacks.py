@@ -231,45 +231,117 @@ def sparsefool(model, device, x_0, label, lb, ub, lambda_=3., max_iter=20, epsil
   return fool_im, r, loops
 
 
-def universal_perturbation(dataloader, model, device, delta=0.2, xi=10, max_iter_uni=10, p=2, num_classes=10, overshoot=0.02, max_iter_df=10):
+""""""""""""""" UNIVERSAL PERTUBATION """""""""""""""
+
+def show_univ_examples(num_images, model, device, v):
+  f = plt.figure()
+  i = 0
+  for img, label in adv_loader:
+
+    if i >= num_images:
+      break
+    i += 1
+
+    img = img.to(device)
+    label = label.to(device)
+
+    y = model(img)
+    init_pred = y.max(1, keepdim=True)[1]
+
+    f.add_subplot(3,num_images,i)
+    plt.axis('off')
+    f.text(.03 + (0.8/num_images)*i, .62, cifar10_classes[label.item()], ha='center')
+    plt.imshow(displayable(img.cpu()))
+
+    adv_x = img + v
+    y_adv = model(adv_x)
+    adv_pred = y_adv.max(1, keepdim=True)[1]
+
+    f.add_subplot(3,num_images,2*num_images+i)
+    plt.axis('off')
+    f.text(.03 + (0.8/num_images)*i, .1, cifar10_classes[adv_pred.item()], ha='center')
+    plt.imshow(displayable(adv_x.cpu()))
+
+  f.add_subplot(3,num_images,num_images + np.ceil(num_images/2))
+  plt.axis('off')
+  f.text(0.7, 0.5, 'Univ. perturbation', ha='center')
+  plt.imshow(displayable(v.cpu()))
+
+  plt.show(block=True)
+
+
+def univ_fool_rate(model, device, dataset, v, batch_size=250):
+
+    model = model.to(device).eval()
+    dataset = dataset.to(device)
+
+    num_images = dataset.size(0)
+
+    # Perturb the dataset with the universal perturbation v
+    dataset_perturbed = (dataset + v).to(device)
+
+    num_batches = np.int(np.ceil(np.float(num_images) / np.float(batch_size)))
+    fooling_rate = 0.0
+
+    # Compute the estimated labels in batches
+    for ii in pbar(range(num_batches)):
+        m = (ii * batch_size)
+        M = min((ii+1)*batch_size, num_images)
+
+        with torch.no_grad():
+
+          est_labels_orig = torch.argmax(model(dataset[m:M, :, :, :]), axis=1)
+          est_labels_pert = torch.argmax(model(dataset_perturbed[m:M, :, :, :]), axis=1)
+
+        fooling_rate += torch.sum(est_labels_pert != est_labels_orig).item()
+
+    # Compute the fooling rate
+    fooling_rate = fooling_rate / float(num_images)
+    return fooling_rate
+
+
+def universal_perturbation(dataset, labels, model, device, delta=0.2, xi=10, max_iter_uni=10, p=2, num_classes=10, overshoot=0.02, max_iter_df=10, v_ini=None):
+
+  time_ini = time.time()
 
   # Initialize the network and set the model in evaluation mode.
   model = model.to(device).eval()
+  dataset = dataset.to(device)
+  labels = labels.to(device)
 
+  v = v_ini.clone() if v_ini is not None else torch.zeros((1, dataset.size()[1], dataset.size()[2], dataset.size()[3])).to(device)
   fooling_rate = 0.0
+  num_images = dataset.size()[0]
+
+  v_best = v.clone()
+  fool_rate_best = 0.0
+
   itr = 0
-  num_images = 1000
-
-  x,_ = next(iter(dataloader))
-  input_shape = x.size()
-  v = torch.zeros(input_shape).to(device)  # torch.Size([1, 3, 32, 32])
-
   while fooling_rate < 1-delta and itr < max_iter_uni:
+
+    # Shuffle the dataset
+    order = np.arange(num_images)
+    np.random.shuffle(order)
+    dataset[np.arange(num_images)] = dataset[order]
+    labels[np.arange(num_images)] = labels[order]
 
     print('Starting pass number ', itr)
 
-    fooling_rate = 0.0
-
     # Go through the data set and compute the perturbation increments sequentially
-    i = 0
-    for image, label in pbar(dataloader):
-      if i >= num_images:
-        break
-      i = i+1
+    for k in pbar(range(num_images)):
+      cur_img = dataset[k:(k+1), :, :, :]
+      label = labels[k]
 
-      image, label = image.to(device), label.to(device)
+      pred_label = model(cur_img).max(1, keepdim=True)[1].item()
 
-      image_v = image.add(v).to(device)
-      image_v.requires_grad = True
-
-      if model(image_v).max(1, keepdim=True)[1] == model(image).max(1, keepdim=True)[1]:
+      if pred_label == label.item() and model(cur_img + v).max(1, keepdim=True)[1].item() == pred_label:
 
         # Compute adversarial perturbation
-        _, _, dr, loop_i = deepfool(model, device, image_v, num_classes=num_classes, overshoot=overshoot, max_iter=max_iter_df)
+        _, _, dr, loop_i = deepfool(model, device, cur_img + v, num_classes=num_classes, overshoot=overshoot, lambda_fac=1+overshoot, max_iter=max_iter_df, p=p)
 
         # Make sure it converged...
         if loop_i < max_iter_df-1:
-          v = v.add(dr)
+          v = v + dr
 
           # Project on the lp ball centered at 0 and of radius xi
           if p == 2:
@@ -279,20 +351,21 @@ def universal_perturbation(dataloader, model, device, delta=0.2, xi=10, max_iter
 
     itr += 1
 
-    # Update fooling rate
-    i = 0
-    for image, label in dataloader:
-      if i >= num_images:
-        break
-      i += 1
-      image, label = image.to(device), label.to(device)
-      image_v = image.add(v).to(device)
-      if model(image + v).max(1, keepdim=True)[1].item() != model(image).max(1, keepdim=True)[1].item():
-        fooling_rate += 1
-    fooling_rate /= num_images
-    print('fooling_rate: ', fooling_rate)
+    fooling_rate = univ_fool_rate(model, device, dataset, v, batch_size=100)
+    print('FOOLING RATE = ', fooling_rate)
 
-  return v
+    if fooling_rate > fool_rate_best:
+      v_best = v.clone()
+      fool_rate_best = fooling_rate
+
+  time_end = time.time()
+  total_time = time_end-time_ini
+  print('Total time: {:.2f}'.format(total_time))
+  print('Total iters:', itr)
+  print('Norm of the univ. perturbation: {:.4f}'.format(torch.norm(v, 2 if p==2 else float('inf')).item()))
+
+  return v_best, fool_rate_best
+
 
 
 """"""""""""""" ONE PIXEL ATTACK """""""""""""""

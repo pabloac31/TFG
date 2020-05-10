@@ -136,21 +136,3 @@ def unravel_index(index, shape):
 # Convert a tensor to a plt displayable numpy array in range [0,1]
 def displayable(img, dataset='cifar10'):  # tensor of size 1xCxHxW
   return np.transpose(denormalize(img.squeeze().numpy(), dataset=dataset), (1,2,0))
-
-
-def plot_examples(epsilons, examples):
-  cnt = 0
-  plt.figure(figsize=(8,10))
-  for i in range(len(epsilons)):
-    for j in range(len(examples[i])):
-      cnt += 1
-      plt.subplot(len(epsilons), len(examples[0]), cnt)
-      plt.xticks([], [])
-      plt.yticks([], [])
-      if j == 0:
-        plt.ylabel("Eps: {}".format(epsilons[i]), fontsize=14)
-      orig,adv,ex = examples[i][j]
-      plt.title("{} -> {}".format(orig, adv))
-      plt.imshow(ex, cmap="gray")
-  plt.tight_layout()
-  plt.show()
