@@ -55,8 +55,8 @@ def normalize(img, dataset='cifar10'):  # img of size (3,H,W)
   return img
 
 
-min_rgb = {'cifar10': normalize(torch.tensor([0.,0.,0.], dtype=torch.double), dataset='cifar10')}
-max_rgb = {'cifar10': normalize(torch.tensor([1.,1.,1.], dtype=torch.double), dataset='cifar10')}
+min_rgb = {'cifar10': normalize(torch.tensor([0.,0.,0.], dtype=torch.double), dataset='cifar10'), 'imagenet': normalize(torch.tensor([0.,0.,0.], dtype=torch.double), dataset='imagenet')}
+max_rgb = {'cifar10': normalize(torch.tensor([1.,1.,1.], dtype=torch.double), dataset='cifar10'), 'imagenet': normalize(torch.tensor([1.,1.,1.], dtype=torch.double), dataset='imagenet')}
 
 
 def denormalize(img, dataset='cifar10'):  # img of size (3,H,W)
