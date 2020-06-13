@@ -95,8 +95,8 @@ def clamp(img, inf, sup, dataset='cifar10'):
 
 # For SparseFool
 def valid_bounds(img, delta=255, dataset='cifar10'):
-  mean = mean_cifar10 if dataset=='cifar10' else [0,0,0]
-  std = std_cifar10 if dataset=='cifar10' else [1,1,1]
+  mean = mean_cifar10 if dataset=='cifar10' else mean_ImageNet
+  std = std_cifar10 if dataset=='cifar10' else std_ImageNet
   # Deepcopy of the image as a numpy int array of range [0, 255]
   im = copy.deepcopy(np.transpose(denormalize(img.cpu().detach().numpy()[0], dataset=dataset), (1,2,0)))
   im *= 255
