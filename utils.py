@@ -8,10 +8,19 @@ from tqdm import tqdm as pbar
 import copy
 
 
-# CIFAR10 mean and std for normalization
+# CIFAR10 mean and std
 mean_cifar10, std_cifar10 = [0.4914, 0.4822, 0.4465], [0.2023, 0.1994, 0.2010]
 
+# ImageNet mean and std
+mean_ImageNet, std_ImageNet = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+
+# CIFAR10 classes
 cifar10_classes = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
+
+# Min and max RGB values of a pixel normalized with CIFAR10 mean and std
+min_rgb = {'cifar10': normalize(torch.tensor([0.,0.,0.], dtype=torch.double), dataset='cifar10')}
+max_rgb = {'cifar10': normalize(torch.tensor([1.,1.,1.], dtype=torch.double), dataset='cifar10')}
+
 
 # Returns a DataLoader of CIFAR10 test set
 def testloader_cifar10(path, batch_size, shuffle=True):
@@ -26,7 +35,7 @@ def testloader_cifar10(path, batch_size, shuffle=True):
   return test_loader
 
 
-# Shows the accuracy of the model
+# Shows the accuracy of a model
 def test_model(model, device, test_loader):
 
     model = model.to(device).eval()
@@ -47,28 +56,26 @@ def test_model(model, device, test_loader):
     return logs['Accuracy']
 
 
+# Normalize an image using the corresponding mean and std
 def normalize(img, dataset='cifar10'):  # img of size (3,H,W)
-  mean = mean_cifar10 if dataset=='cifar10' else [0,0,0]
-  std = std_cifar10 if dataset=='cifar10' else [1,1,1]
+  mean = mean_cifar10 if dataset=='cifar10' else mean_ImageNet
+  std = std_cifar10 if dataset=='cifar10' else std_ImageNet
   for channel in range(3):
     img[channel] = (img[channel] - mean[channel]) / std[channel]
   return img
 
 
-min_rgb = {'cifar10': normalize(torch.tensor([0.,0.,0.], dtype=torch.double), dataset='cifar10')}
-max_rgb = {'cifar10': normalize(torch.tensor([1.,1.,1.], dtype=torch.double), dataset='cifar10')}
-
-
+# Denormalize an image obtaining original pixels values in range [0,1]
 def denormalize(img, dataset='cifar10'):  # img of size (3,H,W)
-  mean = mean_cifar10 if dataset=='cifar10' else [0,0,0]
-  std = std_cifar10 if dataset=='cifar10' else [1,1,1]
+  mean = mean_cifar10 if dataset=='cifar10' else mean_ImageNet
+  std = std_cifar10 if dataset=='cifar10' else std_ImageNet
   for channel in range(3):
     img[channel] = img[channel] * std[channel] + mean[channel]
   return img
 
-
+# De-scale an image using the std of the dataset
 def de_scale(x, dataset='cifar10'):  # x: tensor of size 1xCxHxW
-  std = std_cifar10 if dataset=='cifar10' else [1,1,1]
+  std = std_cifar10 if dataset=='cifar10' else std_ImageNet
   x[0][0] *= std[0]
   x[0][1] *= std[1]
   x[0][2] *= std[2]
@@ -82,10 +89,10 @@ def clip_image_values(x, minv, maxv):
     return x
 
 
-# Clamp normalized image values in the desired range (no-normalized)
+# Clamp normalized image values in the desired range
 def clamp(img, inf, sup, dataset='cifar10'):
-  mean = mean_cifar10 if dataset=='cifar10' else [0,0,0]
-  std = std_cifar10 if dataset=='cifar10' else [1,1,1]
+  mean = mean_cifar10 if dataset=='cifar10' else mean_ImageNet
+  std = std_cifar10 if dataset=='cifar10' else std_ImageNet
   for channel in range(3):
     lim_inf = (inf-mean[channel]) / std[channel]
     lim_sup = (sup-mean[channel]) / std[channel]
@@ -93,10 +100,10 @@ def clamp(img, inf, sup, dataset='cifar10'):
   return img
 
 
-# For SparseFool
+# COmpute valid bounds for SparseFool
 def valid_bounds(img, delta=255, dataset='cifar10'):
-  mean = mean_cifar10 if dataset=='cifar10' else [0,0,0]
-  std = std_cifar10 if dataset=='cifar10' else [1,1,1]
+  mean = mean_cifar10 if dataset=='cifar10' else mean_ImageNet
+  std = std_cifar10 if dataset=='cifar10' else std_ImageNet
   # Deepcopy of the image as a numpy int array of range [0, 255]
   im = copy.deepcopy(np.transpose(denormalize(img.cpu().detach().numpy()[0], dataset=dataset), (1,2,0)))
   im *= 255
@@ -125,6 +132,7 @@ def valid_bounds(img, delta=255, dataset='cifar10'):
   return lb, ub
 
 
+# Get the corresponding index considering the shape of an array
 def unravel_index(index, shape):
     out = []
     for dim in reversed(shape):

@@ -9,8 +9,8 @@ import torch.optim as optim
 from torch.autograd import Variable
 from torch.autograd.gradcheck import zero_gradients
 import torchvision.transforms.functional as TF
-
 from PIL import Image
+
 from utils import *
 
 
@@ -28,7 +28,7 @@ def fgsm(model, image, label, output, epsilon, clip=True, dataset='cifar10'):
   # Collect the element-wise sign of the data gradient
   sign_data_grad = data_grad.sign()
   # Create the perturbation (considering data normalization)
-  std = std_cifar10 if dataset=='cifar10' else [1,1,1]
+  std = std_cifar10 if dataset=='cifar10' else std_ImageNet
   adv_pert = sign_data_grad
   adv_pert[0][0] = adv_pert[0][0] * (epsilon / std[0])
   adv_pert[0][1] = adv_pert[0][1] * (epsilon / std[1])
@@ -151,6 +151,7 @@ def deepfool(model, device, im, num_classes=10, overshoot=0.02, lambda_fac=1.01,
   return grad, pert_image, r_tot, loop_i
 
 
+
 """"""""""""""""""""""""" SPARSEFOOL """""""""""""""""""""""""
 
 def linear_solver(x_0, normal, boundary_point, lb, ub):
@@ -201,7 +202,7 @@ def linear_solver(x_0, normal, boundary_point, lb, ub):
   return x_i.detach()  # for deepcopy
 
 
-def sparsefool(model, device, x_0, label, lb, ub, lambda_=3., max_iter=20, epsilon=0.02):
+def sparsefool(model, device, x_0, label, lb, ub, lambda_=3., max_iter=20, epsilon=0.02, dataset='cifar10'):
 
   # Initialize variables
   x_i = copy.deepcopy(x_0)
@@ -212,7 +213,7 @@ def sparsefool(model, device, x_0, label, lb, ub, lambda_=3., max_iter=20, epsil
   while fool_label == label and loops < max_iter:
 
     # Compute l2 adversarial perturbation (using DeepFool)
-    normal, x_adv,_,_ = deepfool(model, device, x_i, lambda_fac=lambda_)
+    normal, x_adv,_,_ = deepfool(model, device, x_i, lambda_fac=lambda_, dataset=dataset)
 
     # Update x_i using the linear solver
     x_i = linear_solver(x_i, normal, x_adv, lb, ub)
@@ -468,8 +469,11 @@ def one_pixel_attack(model, device, img, label, d=1, target_label=None, iters=10
   return perturb(best_solution, img), iteration, scores
 
 
+
+"""""""""""""""" TEST A METHOD IN A SINGLE IMAGE """""""""""""""
+
 # Test the desired method in one image
-def test_method(model, device, img, label, method, params):
+def test_method(model, device, img, label, method, params, show_pert=True):
 
   img = img.clone()
 
@@ -512,28 +516,31 @@ def test_method(model, device, img, label, method, params):
   adv_pred = y_adv.max(1, keepdim=True)[1]
   adv_x_conf = F.softmax(y_adv, dim=1).max(1, keepdim=True)[0].item()
 
-  if adv_pred.item() == label.item():
-    print("Attack failed...")
+  # Plot results
+  if show_pert:
+    f = plt.figure()
+    f.add_subplot(1,3,1)
+    plt.title('Original image')
+    plt.axis('off')
+    f.text(.25, .3, cifar10_classes[label.item()] + ' ({:.2f}%)'.format(x_conf*100), ha='center')
+    plt.imshow(displayable(img))
+    f.add_subplot(1,3,2)
+    plt.title('Perturbation')
+    plt.axis('off')
+    plt.imshow(displayable(pert_x.cpu().detach()))
+    f.add_subplot(1,3,3)
+    plt.title('Adv. image')
+    plt.axis('off')
+    f.text(.8, .3, cifar10_classes[adv_pred.item()] + ' ({:.2f}%)'.format(adv_x_conf*100), ha='center')
+    plt.imshow(displayable(adv_x.cpu().detach()))
+    plt.show(block=True)
 
   else:
-    print("Succesful attack!")
-
-  f = plt.figure()
-  f.add_subplot(1,3,1)
-  plt.title('Original image')
-  plt.axis('off')
-  f.text(.25, .3, cifar10_classes[label.item()] + ' ({:.2f}%)'.format(x_conf*100), ha='center')
-  plt.imshow(displayable(img))
-  f.add_subplot(1,3,2)
-  plt.title('Perturbation')
-  plt.axis('off')
-  plt.imshow(displayable(pert_x.cpu().detach()))
-  f.add_subplot(1,3,3)
-  plt.title('Adv. image')
-  plt.axis('off')
-  f.text(.8, .3, cifar10_classes[adv_pred.item()] + ' ({:.2f}%)'.format(adv_x_conf*100), ha='center')
-  plt.imshow(displayable(adv_x.cpu().detach()))
-  plt.show(block=True)
+    f = plt.figure()
+    plt.axis('off')
+    f.text(.51, .08, cifar10_classes[adv_pred.item()] + ' ({:.2f}%)'.format(adv_x_conf*100), ha='center', fontsize=15)
+    plt.imshow(displayable(adv_x.cpu().detach()))
+    plt.show(block=True)
 
   if method in ['deepfool',  'sparsefool', 'one_pixel_attack']:
     print('Number of iterations needed: ', n_iter)
@@ -542,9 +549,14 @@ def test_method(model, device, img, label, method, params):
     pert_pixels = pert_x.flatten().nonzero().size(0)
     print('Number of perturbed pixels: ', pert_pixels)
 
-  if method == 'one_pixel_attack':
-    return scores
+  #if method == 'one_pixel_attack':
+    #return scores
 
+  return adv_pred.item() == label.item(), x_conf*100
+
+
+
+""""""""" PERFORM A COMPLETE ATTACK ON CIFAR10 TEST SET """""""""
 
 # Performs an attack and shows the results achieved by some method
 def attack_model(model, device, test_loader, method, params, p=2, iters=10000, dataset='cifar10'):
